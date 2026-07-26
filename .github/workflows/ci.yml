@@ -21,8 +21,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -36,7 +36,7 @@ jobs:
           node-version: 22
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm install --silent
 
       - name: Build React frontend
         run: npm run build
@@ -45,4 +45,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check Tauri backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        shell: bash
+        run: |
+          set +e
+          cargo check --quiet --message-format=short --manifest-path src-tauri/Cargo.toml > cargo-check.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "Rust 编译失败，错误上下文如下："
+            grep -E -C 4 '(^error|error\[|failed to run custom build command|could not compile)' cargo-check.log | tail -n 180 || tail -n 180 cargo-check.log
+          fi
+          exit "$status"
