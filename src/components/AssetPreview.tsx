@@ -11,6 +11,7 @@ interface AssetPreviewProps {
   allowWordpressFallback: boolean;
   cacheEpoch: number;
   className?: string;
+  onCacheChanged?: () => void;
 }
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
@@ -21,6 +22,7 @@ export function AssetPreview({
   allowWordpressFallback,
   cacheEpoch,
   className = '',
+  onCacheChanged,
 }: AssetPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const retryRef = useRef(false);
@@ -88,6 +90,7 @@ export function AssetPreview({
         else setSrc(preview.proxy_url);
         setSource(preview.source);
         setState(preview.local_path || preview.proxy_url ? 'ready' : 'failed');
+        if (preview.cached) onCacheChanged?.();
       } catch {
         if (!cancelled) setState('failed');
       }
@@ -97,7 +100,7 @@ export function AssetPreview({
     return () => {
       cancelled = true;
     };
-  }, [allowWordpressFallback, asset.id, preferOriginal, state, storedPath, visible]);
+  }, [allowWordpressFallback, asset.id, onCacheChanged, preferOriginal, state, storedPath, visible]);
 
   const retryAfterImageError = async () => {
     if (retryRef.current) {
@@ -118,6 +121,7 @@ export function AssetPreview({
       else setSrc(preview.proxy_url);
       setSource(preview.source);
       setState(preview.local_path || preview.proxy_url ? 'ready' : 'failed');
+      if (preview.cached) onCacheChanged?.();
     } catch {
       setSrc(null);
       setState('failed');
