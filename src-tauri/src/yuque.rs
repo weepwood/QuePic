@@ -4,6 +4,7 @@ use url::Url;
 
 const UPLOAD_ENDPOINT: &str = "https://www.yuque.com/api/upload/attach";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &["yuque.com", "nlark.com"];
 
 #[derive(Debug, Deserialize)]
 struct YuqueEnvelope {
@@ -31,7 +32,8 @@ pub async fn upload(
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(90))
-        .redirect(reqwest::redirect::Policy::limited(3))
+        // 上传请求携带完整登录 Cookie，不允许跟随任何重定向。
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("无法初始化网络客户端：{error}"))?;
 
@@ -50,6 +52,9 @@ pub async fn upload(
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err("语雀 Cookie 已失效或权限不足，请重新获取。".into());
+    }
+    if status.is_redirection() {
+        return Err("语雀上传接口返回了重定向。为避免 Cookie 泄露，QuePic 已拒绝继续请求。".into());
     }
 
     let content_length = response.content_length().unwrap_or(0) as usize;
@@ -97,5 +102,38 @@ fn normalize_remote_url(raw_url: &str) -> Result<String, String> {
     if parsed.scheme() != "https" {
         return Err("语雀返回的图片地址不是 HTTPS。".into());
     }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "语雀返回的图片地址缺少域名。".to_string())?
+        .to_ascii_lowercase();
+    if !ALLOWED_IMAGE_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+    {
+        return Err("语雀返回了不受信任的图片域名，QuePic 已拒绝保存该链接。".into());
+    }
+
     Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_remote_url;
+
+    #[test]
+    fn accepts_yuque_cdn_urls() {
+        assert_eq!(
+            normalize_remote_url("//cdn.nlark.com/yuque/example.png").unwrap(),
+            "https://cdn.nlark.com/yuque/example.png"
+        );
+        assert!(normalize_remote_url("https://cdn.yuque.com/example.png").is_ok());
+    }
+
+    #[test]
+    fn rejects_untrusted_or_insecure_urls() {
+        assert!(normalize_remote_url("http://cdn.nlark.com/example.png").is_err());
+        assert!(normalize_remote_url("https://example.com/image.png").is_err());
+        assert!(normalize_remote_url("https://nlark.com.evil.example/image.png").is_err());
+    }
 }
