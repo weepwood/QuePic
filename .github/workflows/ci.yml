@@ -32,14 +32,9 @@ jobs:
     name: Rust backend
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch source and check backend
-        shell: bash
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
         run: |
-          set -euo pipefail
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD
           sudo apt-get update -qq > /tmp/apt.log 2>&1
           sudo apt-get install -y -qq \
             libwebkit2gtk-4.1-dev \
@@ -48,12 +43,7 @@ jobs:
             patchelf \
             libdbus-1-dev \
             pkg-config >> /tmp/apt.log 2>&1
-          rustup default stable > /dev/null
-          set +e
-          cargo check --quiet --manifest-path src-tauri/Cargo.toml > cargo-check.log 2>&1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "Rust 编译失败，错误上下文如下："
-            tail -n 120 cargo-check.log
-          fi
-          exit "$status"
+      - name: Use stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check Tauri backend
+        run: cargo check --quiet --manifest-path src-tauri/Cargo.toml
