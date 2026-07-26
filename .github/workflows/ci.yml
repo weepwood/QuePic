@@ -50,10 +50,10 @@ jobs:
             pkg-config >> /tmp/apt.log 2>&1
           rustup default stable > /dev/null
           set +e
-          cargo check --quiet --message-format=short --manifest-path src-tauri/Cargo.toml > cargo-check.log 2>&1
+          cargo check --quiet --manifest-path src-tauri/Cargo.toml > cargo-check.log 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
             echo "Rust 编译失败，错误上下文如下："
-            grep -E -C 4 '(^error|error\[|failed to run custom build command|could not compile)' cargo-check.log | tail -n 180 || tail -n 180 cargo-check.log
+            tail -n 120 cargo-check.log
           fi
           exit "$status"
