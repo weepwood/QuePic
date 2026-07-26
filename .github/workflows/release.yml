@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build ${{ matrix.name }}
+    if: startsWith(github.event.head_commit.message, 'release:')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            args: --bundles nsis
+          - name: Linux x64
+            platform: ubuntu-22.04
+            args: --bundles appimage,deb
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macOS Intel
+            platform: macos-latest
+            args: --target x86_64-apple-darwin --bundles dmg
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.name, 'macOS') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Install frontend dependencies
+        run: npm install --silent
+
+      - name: Build and publish QuePic
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: QuePic v__VERSION__
+          releaseBody: |
+            QuePic 首个桌面版本。
+
+            - Windows、macOS 和 Linux 安装包
+            - React + Tauri 2 + Rust
+            - 通过语雀 Cookie 上传图片并保存本地索引
+            - Cookie 仅保存在操作系统凭据库
+
+            当前安装包尚未进行商业代码签名，操作系统可能显示未知开发者提示。
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          releaseAssetNamePattern: QuePic_[version]_[platform]_[arch]_[bundle][ext]
+          args: ${{ matrix.args }}
