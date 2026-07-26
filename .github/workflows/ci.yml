@@ -67,7 +67,22 @@ jobs:
             pkg-config >> /tmp/apt.log 2>&1
       - name: Use stable Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Check Tauri backend
-        run: cargo check --quiet --manifest-path src-tauri/Cargo.toml
-      - name: Run Rust unit tests
-        run: cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib
+      - name: Check and test Tauri backend
+        shell: bash
+        run: |
+          set +e
+          cargo check --quiet --manifest-path src-tauri/Cargo.toml > /tmp/cargo-check.log 2>&1
+          check_status=$?
+          if [ "$check_status" -ne 0 ]; then
+            echo "Rust 编译失败："
+            tail -n 120 /tmp/cargo-check.log
+            exit "$check_status"
+          fi
+
+          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
+          test_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            echo "Rust 单元测试失败："
+            tail -n 120 /tmp/cargo-test.log
+          fi
+          exit "$test_status"
