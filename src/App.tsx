@@ -61,6 +61,7 @@ export default function App() {
   const [selected, setSelected] = useState<AssetRecord | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewRefreshTimerRef = useRef<number | null>(null);
 
   const showToast = useCallback((type: 'success' | 'error', text: string) => {
     setToast({ type, text });
@@ -97,6 +98,16 @@ export default function App() {
     }
   }, [accountName, showToast]);
 
+  const handlePreviewCached = useCallback(() => {
+    if (previewRefreshTimerRef.current !== null) {
+      window.clearTimeout(previewRefreshTimerRef.current);
+    }
+    previewRefreshTimerRef.current = window.setTimeout(() => {
+      previewRefreshTimerRef.current = null;
+      void Promise.all([refreshAssets(), refreshCacheStats()]);
+    }, 450);
+  }, [refreshAssets, refreshCacheStats]);
+
   useEffect(() => {
     void refreshAssets();
     void refreshCredential();
@@ -109,6 +120,9 @@ export default function App() {
 
   useEffect(() => () => {
     queueRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    if (previewRefreshTimerRef.current !== null) {
+      window.clearTimeout(previewRefreshTimerRef.current);
+    }
   }, []);
 
   const filteredAssets = useMemo(() => {
@@ -384,9 +398,9 @@ export default function App() {
             <div className="library-layout">
               <div className="library-main">
                 <div className="library-heading"><div><span>LOCAL FIRST ASSET INDEX</span><h2>所有图片</h2><p>{assets.length} 张记录 · {cacheStats.cached_count} 张已有本地缓存</p></div><label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、链接或类型" /></label></div>
-                {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : <div className="asset-grid">{filteredAssets.map((asset) => <button className="asset-card" key={asset.id} onClick={() => setSelected(asset)}><AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} /><strong>{asset.file_name}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type}</small></button>)}</div>}
+                {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : <div className="asset-grid">{filteredAssets.map((asset) => <button className="asset-card" key={asset.id} onClick={() => setSelected(asset)}><AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} /><strong>{asset.file_name}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type}</small></button>)}</div>}
               </div>
-              {selected && <aside className="detail"><AssetPreview asset={selected} preferOriginal allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" /><div><span>IMAGE DETAILS</span><h3>{selected.file_name}</h3><dl><div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div><div><dt>格式</dt><dd>{selected.mime_type}</dd></div><div><dt>大小</dt><dd>{formatBytes(selected.file_size)}</dd></div><div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div><div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div></dl><button className="button primary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button><button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button><button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button><button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button><p>删除操作不会删除语雀服务器上的远程图片。</p></div></aside>}
+              {selected && <aside className="detail"><AssetPreview asset={selected} preferOriginal allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" onCacheChanged={handlePreviewCached} /><div><span>IMAGE DETAILS</span><h3>{selected.file_name}</h3><dl><div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div><div><dt>格式</dt><dd>{selected.mime_type}</dd></div><div><dt>大小</dt><dd>{formatBytes(selected.file_size)}</dd></div><div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div><div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div></dl><button className="button primary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button><button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button><button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button><button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button><p>删除操作不会删除语雀服务器上的远程图片。</p></div></aside>}
             </div>
           )}
 
