@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -8,12 +8,11 @@ use crate::{
 };
 
 pub fn initialize(path: &Path) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS assets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +65,7 @@ fn query_one<P>(path: &Path, clause: &str, parameters: P) -> Result<Option<Asset
 where
     P: rusqlite::Params,
 {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     let sql = format!("{} {clause}", asset_select());
     connection
         .query_row(&sql, parameters, map_asset)
@@ -75,7 +74,7 @@ where
 }
 
 pub fn insert_asset(path: &Path, asset: &AssetRecord) -> Result<AssetRecord, String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute(
             r#"
@@ -108,7 +107,7 @@ pub fn upsert_cached_preview(
     asset_id: i64,
     preview: &CachedPreview,
 ) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute(
             r#"
@@ -138,7 +137,7 @@ pub fn upsert_cached_preview(
 }
 
 pub fn mark_preview_error(path: &Path, asset_id: i64, error: &str) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|value| value.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute(
             r#"
@@ -156,7 +155,7 @@ pub fn mark_preview_error(path: &Path, asset_id: i64, error: &str) -> Result<(),
 }
 
 pub fn list_assets(path: &Path) -> Result<Vec<AssetRecord>, String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     let sql = format!("{} ORDER BY a.uploaded_at DESC, a.id DESC", asset_select());
     let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement.query_map([], map_asset).map_err(|error| error.to_string())?;
@@ -164,7 +163,7 @@ pub fn list_assets(path: &Path) -> Result<Vec<AssetRecord>, String> {
 }
 
 pub fn delete_asset(path: &Path, id: i64) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute("DELETE FROM assets WHERE id = ?1", [id])
         .map_err(|error| error.to_string())?;
@@ -172,7 +171,7 @@ pub fn delete_asset(path: &Path, id: i64) -> Result<(), String> {
 }
 
 pub fn clear_previews(path: &Path) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .execute("DELETE FROM asset_previews", [])
         .map_err(|error| error.to_string())?;
@@ -180,7 +179,7 @@ pub fn clear_previews(path: &Path) -> Result<(), String> {
 }
 
 pub fn cache_stats(path: &Path) -> Result<CacheStats, String> {
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = open_connection(path)?;
     connection
         .query_row(
             r#"
@@ -200,6 +199,17 @@ pub fn cache_stats(path: &Path) -> Result<CacheStats, String> {
             },
         )
         .map_err(|error| error.to_string())
+}
+
+fn open_connection(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| error.to_string())?;
+    Ok(connection)
 }
 
 fn asset_select() -> &'static str {
@@ -251,6 +261,34 @@ mod tests {
         std::env::temp_dir().join(format!("quepic-db-{unique}.sqlite"))
     }
 
+    fn test_asset() -> AssetRecord {
+        AssetRecord {
+            id: 0,
+            sha256: "a".repeat(64),
+            file_name: "test.png".into(),
+            mime_type: "image/png".into(),
+            file_size: 128,
+            width: Some(16),
+            height: Some(16),
+            remote_url: "https://cdn.nlark.com/yuque/test.png".into(),
+            account_name: "default".into(),
+            uploaded_at: "2026-07-27T00:00:00Z".into(),
+            original_path: None,
+            thumbnail_path: None,
+            preview_source: "missing".into(),
+            cache_status: "missing".into(),
+            cache_bytes: None,
+            cached_at: None,
+            last_error: None,
+        }
+    }
+
+    fn cleanup_database(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.to_string_lossy()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.to_string_lossy()));
+    }
+
     #[test]
     fn migrates_preview_table_and_reports_empty_stats() {
         let path = temporary_database();
@@ -259,6 +297,35 @@ mod tests {
         assert_eq!(stats.asset_count, 0);
         assert_eq!(stats.cached_count, 0);
         assert_eq!(stats.cache_bytes, 0);
-        let _ = std::fs::remove_file(path);
+        cleanup_database(&path);
+    }
+
+    #[test]
+    fn deleting_asset_cascades_preview_metadata() {
+        let path = temporary_database();
+        initialize(&path).unwrap();
+        let asset = insert_asset(&path, &test_asset()).unwrap();
+        upsert_cached_preview(
+            &path,
+            asset.id,
+            &CachedPreview {
+                original_path: "original.png".into(),
+                thumbnail_path: "thumbnail.png".into(),
+                cache_bytes: 256,
+                cached_at: "2026-07-27T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+
+        let before = cache_stats(&path).unwrap();
+        assert_eq!(before.asset_count, 1);
+        assert_eq!(before.cached_count, 1);
+
+        delete_asset(&path, asset.id).unwrap();
+        let after = cache_stats(&path).unwrap();
+        assert_eq!(after.asset_count, 0);
+        assert_eq!(after.cached_count, 0);
+        assert_eq!(after.cache_bytes, 0);
+        cleanup_database(&path);
     }
 }
