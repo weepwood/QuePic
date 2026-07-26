@@ -27,8 +27,15 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Productivity",
     "shortDescription": "语雀图片上传与本地管理工具",
     "longDescription": "通过语雀 Cookie 上传图片、获取图片链接，并在本地建立可搜索的图片资产索引。"
