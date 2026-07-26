@@ -13,6 +13,14 @@ export async function saveCookie(accountName: string, cookie: string): Promise<C
   return invoke<CredentialStatus>('save_cookie', { accountName, cookie });
 }
 
+export async function openYuqueLogin(): Promise<void> {
+  return invoke('open_yuque_login');
+}
+
+export async function captureYuqueLogin(accountName: string): Promise<CredentialStatus> {
+  return invoke<CredentialStatus>('capture_yuque_login', { accountName });
+}
+
 export async function clearCookie(accountName: string): Promise<void> {
   return invoke('clear_cookie', { accountName });
 }

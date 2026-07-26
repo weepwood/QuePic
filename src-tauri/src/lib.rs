@@ -8,9 +8,13 @@ use std::{fs, path::PathBuf};
 use chrono::Utc;
 use models::{AssetRecord, CredentialStatus, UploadInput, UploadResult};
 use sha2::{Digest, Sha256};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use url::Url;
 
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const YUQUE_LOGIN_WINDOW: &str = "yuque-login";
+const YUQUE_LOGIN_URL: &str = "https://www.yuque.com/login";
+const YUQUE_UPLOAD_URL: &str = "https://www.yuque.com/api/upload/attach";
 const ALLOWED_MIME_TYPES: &[&str] = &[
     "image/png",
     "image/jpeg",
@@ -32,6 +36,69 @@ struct AppState {
 fn save_cookie(account_name: String, cookie: String) -> Result<CredentialStatus, String> {
     let account_name = normalize_account_name(&account_name)?;
     credentials::save(&account_name, &cookie)?;
+    Ok(CredentialStatus {
+        configured: true,
+        account_name,
+    })
+}
+
+#[tauri::command]
+async fn open_yuque_login(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(YUQUE_LOGIN_WINDOW) {
+        window.show().map_err(|error| format!("无法显示语雀登录窗口：{error}"))?;
+        window.set_focus().map_err(|error| format!("无法聚焦语雀登录窗口：{error}"))?;
+        window
+            .navigate(Url::parse(YUQUE_LOGIN_URL).map_err(|error| format!("语雀登录地址无效：{error}"))?)
+            .map_err(|error| format!("无法打开语雀登录页：{error}"))?;
+        return Ok(());
+    }
+
+    let login_url = Url::parse(YUQUE_LOGIN_URL).map_err(|error| format!("语雀登录地址无效：{error}"))?;
+    WebviewWindowBuilder::new(&app, YUQUE_LOGIN_WINDOW, WebviewUrl::External(login_url))
+        .title("登录语雀 · QuePic")
+        .inner_size(1120.0, 760.0)
+        .min_inner_size(900.0, 620.0)
+        .center()
+        .resizable(true)
+        .devtools(false)
+        .on_navigation(|url| matches!(url.scheme(), "https" | "about"))
+        .build()
+        .map_err(|error| format!("无法创建语雀登录窗口：{error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn capture_yuque_login(
+    app: AppHandle,
+    account_name: String,
+) -> Result<CredentialStatus, String> {
+    let account_name = normalize_account_name(&account_name)?;
+    let window = app
+        .get_webview_window(YUQUE_LOGIN_WINDOW)
+        .ok_or_else(|| "请先点击“登录语雀”并在登录窗口中完成登录。".to_string())?;
+    let cookie_window = window.clone();
+    let upload_url = Url::parse(YUQUE_UPLOAD_URL).map_err(|error| format!("语雀上传地址无效：{error}"))?;
+
+    // Tauri 在 Windows WebView2 上同步读取 Cookie 可能死锁，因此放入独立阻塞线程。
+    let cookies = tauri::async_runtime::spawn_blocking(move || cookie_window.cookies_for_url(upload_url))
+        .await
+        .map_err(|error| format!("读取语雀登录会话失败：{error}"))?
+        .map_err(|error| format!("无法读取语雀 Cookie：{error}"))?;
+
+    let cookie_header = cookies
+        .iter()
+        .filter(|cookie| !cookie.name().trim().is_empty())
+        .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_header.len() < 16 || !cookie_header.contains('=') {
+        return Err("尚未检测到有效的语雀登录会话，请在登录窗口完成登录后重试。".into());
+    }
+
+    credentials::save(&account_name, &cookie_header)?;
+    let _ = window.close();
+
     Ok(CredentialStatus {
         configured: true,
         account_name,
@@ -180,6 +247,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             save_cookie,
+            open_yuque_login,
+            capture_yuque_login,
             credential_status,
             clear_cookie,
             list_assets,
