@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deflateSync } from 'node:zlib';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temporaryDirectory = await mkdtemp(join(tmpdir(), 'quepic-icon-'));
@@ -14,11 +15,72 @@ const tauriBinary = join(
   process.platform === 'win32' ? 'tauri.cmd' : 'tauri',
 );
 
-// 使用脚本内置的标准 512×512 RGBA PNG，避免仓库二进制文件在不同写入通道中损坏。
-const sourceIconBase64 = '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';
+const WIDTH = 512;
+const HEIGHT = 512;
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([length, typeBuffer, data, checksum]);
+}
+
+function createIconPng() {
+  const stride = WIDTH * 4 + 1;
+  const pixels = Buffer.alloc(stride * HEIGHT);
+
+  for (let y = 0; y < HEIGHT; y += 1) {
+    const rowOffset = y * stride;
+    pixels[rowOffset] = 0; // PNG filter: None
+    for (let x = 0; x < WIDTH; x += 1) {
+      const pixelOffset = rowOffset + 1 + x * 4;
+      const dx = x - 252;
+      const dy = y - 234;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const ring = distance >= 122 && distance <= 164;
+      const tail = x >= 315 && x <= 425 && y >= 320 && y <= 382;
+      const sparkle = Math.abs(x - 412) + Math.abs(y - 116) < 42;
+
+      const foreground = ring || tail || sparkle;
+      pixels[pixelOffset] = foreground ? 255 : 108;
+      pixels[pixelOffset + 1] = foreground ? 255 : 92;
+      pixels[pixelOffset + 2] = foreground ? 255 : 231;
+      pixels[pixelOffset + 3] = 255;
+    }
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(WIDTH, 0);
+  ihdr.writeUInt32BE(HEIGHT, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(pixels, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 try {
-  await writeFile(temporaryIcon, Buffer.from(sourceIconBase64, 'base64'));
+  await writeFile(temporaryIcon, createIconPng());
 
   await new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(tauriBinary, ['icon', temporaryIcon], {
