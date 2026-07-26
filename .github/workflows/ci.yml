@@ -28,6 +28,28 @@ jobs:
       - name: Build React frontend
         run: npm run build
 
+  icons:
+    name: Platform icons
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+          npm install --silent > /tmp/npm-install.log 2>&1
+          set +e
+          npm run icons > /tmp/icons.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "图标生成失败："
+            tail -n 80 /tmp/icons.log
+          fi
+          exit "$status"
+
   rust:
     name: Rust backend
     runs-on: ubuntu-latest
@@ -43,14 +65,6 @@ jobs:
             patchelf \
             libdbus-1-dev \
             pkg-config >> /tmp/apt.log 2>&1
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install frontend tooling
-        run: npm install --silent
-      - name: Generate platform icons
-        run: npm run icons
       - name: Use stable Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Check Tauri backend
