@@ -10,40 +10,42 @@ concurrency:
   group: quepic-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+permissions:
+  contents: read
 
+jobs:
+  frontend:
+    name: React frontend
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --silent
+      - name: Build React frontend
+        run: npm run build
 
+  rust:
+    name: Rust backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Install Linux dependencies
+        shell: bash
         run: |
-          sudo apt-get update -qq
+          sudo apt-get update -qq > /tmp/apt.log 2>&1
           sudo apt-get install -y -qq \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libdbus-1-dev \
-            pkg-config
-
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install frontend dependencies
-        run: npm install --silent
-
-      - name: Build React frontend
-        run: npm run build
-
+            pkg-config >> /tmp/apt.log 2>&1
       - name: Use stable Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Check Tauri backend
         shell: bash
         run: |
