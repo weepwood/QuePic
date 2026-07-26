@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AssetRecord, CredentialStatus, UploadResult } from '../types';
+import type {
+  AssetRecord,
+  CacheStats,
+  CredentialStatus,
+  PreviewResult,
+  UploadResult,
+} from '../types';
 
 export async function listAssets(): Promise<AssetRecord[]> {
   return invoke<AssetRecord[]>('list_assets');
@@ -27,6 +33,28 @@ export async function clearCookie(accountName: string): Promise<void> {
 
 export async function getCredentialStatus(accountName: string): Promise<CredentialStatus> {
   return invoke<CredentialStatus>('credential_status', { accountName });
+}
+
+export async function ensurePreview(
+  assetId: number,
+  preferOriginal: boolean,
+  allowWordpressFallback: boolean,
+  forceRefresh = false,
+): Promise<PreviewResult> {
+  return invoke<PreviewResult>('ensure_preview', {
+    assetId,
+    preferOriginal,
+    allowWordpressFallback,
+    forceRefresh,
+  });
+}
+
+export async function getCacheStats(): Promise<CacheStats> {
+  return invoke<CacheStats>('cache_stats');
+}
+
+export async function clearPreviewCache(): Promise<CacheStats> {
+  return invoke<CacheStats>('clear_preview_cache');
 }
 
 export async function uploadImage(
