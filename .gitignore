@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Tauri / Rust
+src-tauri/target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+
+# Local application data and credentials
+*.db
+*.db-shm
+*.db-wal
+*.stronghold
