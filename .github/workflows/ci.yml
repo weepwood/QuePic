@@ -54,7 +54,7 @@ jobs:
     name: Rust backend
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch source, check and test backend
+      - name: Fetch source, generate icons, check and test backend
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +70,8 @@ jobs:
             patchelf \
             libdbus-1-dev \
             pkg-config >> /tmp/apt.log 2>&1
+          npm install --silent > /tmp/npm-install.log 2>&1
+          npm run icons > /tmp/icons.log 2>&1
           rustup default stable > /dev/null
 
           set +e
