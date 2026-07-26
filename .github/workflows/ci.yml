@@ -54,9 +54,14 @@ jobs:
     name: Rust backend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux dependencies
+      - name: Fetch source, check and test backend
+        shell: bash
         run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
           sudo apt-get update -qq > /tmp/apt.log 2>&1
           sudo apt-get install -y -qq \
             libwebkit2gtk-4.1-dev \
@@ -65,11 +70,8 @@ jobs:
             patchelf \
             libdbus-1-dev \
             pkg-config >> /tmp/apt.log 2>&1
-      - name: Use stable Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Check and test Tauri backend
-        shell: bash
-        run: |
+          rustup default stable > /dev/null
+
           set +e
           cargo check --quiet --manifest-path src-tauri/Cargo.toml > /tmp/cargo-check.log 2>&1
           check_status=$?
