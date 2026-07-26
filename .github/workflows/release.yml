@@ -65,6 +65,7 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.name, 'macOS') && '-' || '' }}
         with:
           tagName: v__VERSION__
           releaseName: QuePic v__VERSION__
@@ -76,7 +77,7 @@ jobs:
             - 通过语雀 Cookie 上传图片并保存本地索引
             - Cookie 仅保存在操作系统凭据库
 
-            当前安装包尚未进行商业代码签名，操作系统可能显示未知开发者提示。
+            Windows 安装包尚未进行商业代码签名；macOS 使用临时签名但未公证，操作系统可能显示未知开发者提示。
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
