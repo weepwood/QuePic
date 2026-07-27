@@ -26,9 +26,22 @@ jobs:
       - name: Apply optimization
         run: python .github/scripts/apply_large_upload_queue_optimization.py
       - name: Build React frontend
+        id: optimized_frontend
+        continue-on-error: true
         run: |
           npm install --silent
-          npm run build
+          npm run build > .github/queue-optimization-build.log 2>&1
+      - name: Upload frontend diagnostics
+        if: steps.optimized_frontend.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: queue-optimization-diagnostics
+          path: |
+            src/App.tsx
+            .github/queue-optimization-build.log
+      - name: Stop after frontend failure
+        if: steps.optimized_frontend.outcome == 'failure'
+        run: exit 1
       - name: Check and test Rust backend
         run: |
           sudo apt-get update -qq > /tmp/apt.log 2>&1
@@ -49,9 +62,10 @@ jobs:
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           rm -f .github/scripts/apply_large_upload_queue_optimization.py
           rm -f .github/workflows/optimize-large-upload-queue-once.yml
+          rm -f .github/queue-optimization-build.log
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/App.tsx src/styles.css src-tauri/src/lib.rs src-tauri/src/yuque.rs .github/workflows/ci.yml .github/scripts/apply_large_upload_queue_optimization.py .github/workflows/optimize-large-upload-queue-once.yml
+          git add src/App.tsx src/styles.css src-tauri/src/lib.rs src-tauri/src/yuque.rs .github/workflows/ci.yml .github/scripts/apply_large_upload_queue_optimization.py .github/workflows/optimize-large-upload-queue-once.yml .github/queue-optimization-build.log
           git commit -m "优化 50 MB 上传与大队列滚动"
           git push origin HEAD:feat/compact-preview-cache
 
