@@ -63,6 +63,11 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewRefreshTimerRef = useRef<number | null>(null);
 
+  const cachePercent = cacheStats.asset_count > 0
+    ? Math.round((cacheStats.cached_count / cacheStats.asset_count) * 100)
+    : 0;
+  const pendingUploadCount = queue.filter((item) => item.status === 'waiting' || item.status === 'failed').length;
+
   const showToast = useCallback((type: 'success' | 'error', text: string) => {
     setToast({ type, text });
     window.setTimeout(() => setToast(null), 4200);
@@ -117,6 +122,15 @@ export default function App() {
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
+
+  useEffect(() => {
+    if (!selected) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelected(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selected]);
 
   useEffect(() => () => {
     queueRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -317,7 +331,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark"><Sparkles size={18} /></span>
-          <div><strong>QuePic</strong><small>雀图库</small></div>
+          <div><strong>QuePic</strong><small>本地优先的雀图库</small></div>
         </div>
         <nav>
           {navItems.map(({ key, label, icon: Icon }) => (
@@ -326,15 +340,20 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-cache-card">
+          <div className="sidebar-cache-heading"><HardDrive size={15} /><span>本地缓存</span><strong>{cachePercent}%</strong></div>
+          <div className="cache-progress"><span style={{ width: `${cachePercent}%` }} /></div>
+          <small>{cacheStats.cached_count}/{cacheStats.asset_count} 张 · {formatBytes(cacheStats.cache_bytes)}</small>
+        </div>
         <div className="credential-summary">
           <span className={credentialReady ? 'dot ready' : 'dot'} />
-          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{credentialReady ? `${cacheStats.cached_count}/${cacheStats.asset_count} 张已缓存` : '前往设置完成登录'}</small></div>
+          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{credentialReady ? '上传与历史回源已就绪' : '前往设置完成登录'}</small></div>
         </div>
       </aside>
 
       <main>
         <header className="topbar">
-          <div><h1>{view === 'upload' ? '上传图片' : view === 'library' ? '图片库' : '设置'}</h1><p>{view === 'upload' ? '上传到语雀并同步建立本地预览缓存。' : view === 'library' ? '优先使用本地缓存，不再直接加载防盗链地址。' : '管理语雀凭据、缓存和兼容显示选项。'}</p></div>
+          <div className="page-title"><span>QUEPIC WORKSPACE</span><h1>{view === 'upload' ? '上传图片' : view === 'library' ? '图片库' : '设置'}</h1><p>{view === 'upload' ? '上传到语雀，并同步建立可靠的本地预览。' : view === 'library' ? '本地缓存优先显示，远程链接只用于分享。' : '管理语雀凭据、缓存和兼容显示选项。'}</p></div>
           <div className="account-pill"><span className={credentialReady ? 'dot ready' : 'dot'} /><div><strong>{accountName}</strong><small>{credentialReady ? '语雀会话已安全保存' : '未连接语雀'}</small></div></div>
         </header>
 
@@ -353,9 +372,11 @@ export default function App() {
                   void addFiles(Array.from(event.target.files || []));
                   event.currentTarget.value = '';
                 }} />
+                <span className="drop-eyebrow">LOCAL-FIRST UPLOAD</span>
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
-                <p>上传成功后会保存本地原图并生成 512px 缩略图，图库可离线浏览。</p>
+                <p>上传成功后保存本地原图，并自动生成 512px 缩略图。即使断网，已缓存图片仍可浏览。</p>
+                <div className="drop-hints"><span>单张 25 MB</span><span>自动去重</span><span>离线预览</span></div>
                 <div className="actions">
                   <button className="button primary" onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" onClick={async () => {
@@ -377,7 +398,7 @@ export default function App() {
               </div>
 
               <div className="panel queue-panel">
-                <div className="panel-heading"><div><span>UPLOAD QUEUE</span><h2>上传队列</h2></div><button className="button primary compact" disabled={!credentialReady || !queue.some((item) => item.status === 'waiting' || item.status === 'failed')} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button></div>
+                <div className="panel-heading"><div><span>UPLOAD QUEUE</span><h2>上传队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div><button className="button primary compact" disabled={!credentialReady || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button></div>
                 {!credentialReady && <div className="warning">请先在设置中登录语雀并保存会话。</div>}
                 {queue.length === 0 ? <div className="empty"><FileImage size={26} /><p>待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
@@ -385,7 +406,7 @@ export default function App() {
                       <article className="queue-item" key={item.id}>
                         <img src={item.previewUrl} alt="" />
                         <div><strong>{item.file.name}</strong><small>{formatBytes(item.file.size)}{item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}</small>{item.status === 'failed' && <b className="error-text">{item.error}</b>}{item.status === 'success' && <b className="success-text"><Check size={13} />{item.result?.deduplicated ? '复用历史链接并补建缓存' : '上传并缓存成功'}</b>}</div>
-                        <div className="item-actions">{item.status === 'uploading' && <LoaderCircle className="spin" size={18} />}{item.status === 'failed' && <button onClick={() => void uploadOne(item.id)}>重试</button>}{item.status === 'success' && item.result && <button title="复制 Markdown" onClick={() => void copyText(`![${item.file.name}](${item.result?.asset.remote_url})`)}><Copy size={15} /></button>}<button onClick={() => removeQueueItem(item.id)}><X size={15} /></button></div>
+                        <div className="item-actions">{item.status === 'uploading' && <LoaderCircle className="spin" size={18} />}{item.status === 'failed' && <button onClick={() => void uploadOne(item.id)}>重试</button>}{item.status === 'success' && item.result && <button title="复制 Markdown" onClick={() => void copyText(`![${item.file.name}](${item.result?.asset.remote_url})`)}><Copy size={15} /></button>}<button title="移除" onClick={() => removeQueueItem(item.id)}><X size={15} /></button></div>
                       </article>
                     ))}
                   </div>
@@ -397,10 +418,24 @@ export default function App() {
           {view === 'library' && (
             <div className="library-layout">
               <div className="library-main">
-                <div className="library-heading"><div><span>LOCAL FIRST ASSET INDEX</span><h2>所有图片</h2><p>{assets.length} 张记录 · {cacheStats.cached_count} 张已有本地缓存</p></div><label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、链接或类型" /></label></div>
-                {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : <div className="asset-grid">{filteredAssets.map((asset) => <button className="asset-card" key={asset.id} onClick={() => setSelected(asset)}><AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} /><strong>{asset.file_name}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type}</small></button>)}</div>}
+                <div className="library-heading"><div><span>LOCAL FIRST ASSET INDEX</span><h2>所有图片</h2><p>远程链接保留用于复制，预览默认从本地缓存加载。</p></div><label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、链接或类型" /></label></div>
+                <div className="library-overview">
+                  <div><Images size={18} /><span><strong>{assets.length}</strong><small>图片记录</small></span></div>
+                  <div><HardDrive size={18} /><span><strong>{cacheStats.cached_count}</strong><small>本地缓存</small></span></div>
+                  <div><Database size={18} /><span><strong>{formatBytes(cacheStats.cache_bytes)}</strong><small>缓存占用</small></span></div>
+                </div>
+                {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : <div className="asset-grid">{filteredAssets.map((asset) => <button className="asset-card" key={asset.id} aria-label={`查看 ${asset.file_name}`} onClick={() => setSelected(asset)}><AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} /><div className="asset-card-body"><strong>{asset.file_name}</strong><span className={asset.cache_status === 'ready' ? 'asset-cache-state ready' : 'asset-cache-state'}>{asset.cache_status === 'ready' ? '已缓存' : '按需缓存'}</span><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type}</small></div></button>)}</div>}
               </div>
-              {selected && <aside className="detail"><AssetPreview asset={selected} preferOriginal allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" onCacheChanged={handlePreviewCached} /><div><span>IMAGE DETAILS</span><h3>{selected.file_name}</h3><dl><div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div><div><dt>格式</dt><dd>{selected.mime_type}</dd></div><div><dt>大小</dt><dd>{formatBytes(selected.file_size)}</dd></div><div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div><div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div></dl><button className="button primary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button><button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button><button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button><button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button><p>删除操作不会删除语雀服务器上的远程图片。</p></div></aside>}
+              {selected && (
+                <>
+                  <button className="detail-backdrop" aria-label="关闭图片详情" onClick={() => setSelected(null)} />
+                  <aside className="detail" aria-label="图片详情">
+                    <button className="detail-close" aria-label="关闭图片详情" onClick={() => setSelected(null)}><X size={17} /></button>
+                    <AssetPreview asset={selected} preferOriginal allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" onCacheChanged={handlePreviewCached} />
+                    <div className="detail-body"><span>IMAGE DETAILS</span><h3>{selected.file_name}</h3><dl><div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div><div><dt>格式</dt><dd>{selected.mime_type}</dd></div><div><dt>大小</dt><dd>{formatBytes(selected.file_size)}</dd></div><div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div><div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div></dl><button className="button primary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button><button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button><button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button><button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button><p>删除操作不会删除语雀服务器上的远程图片。按 Esc 也可关闭详情。</p></div>
+                  </aside>
+                </>
+              )}
             </div>
           )}
 
@@ -430,7 +465,7 @@ export default function App() {
                   </div>
                   <label className="toggle-row">
                     <span><Globe2 size={17} /><span><strong>WordPress CDN 兼容兜底</strong><small>仅在本地缓存和语雀回源均失败时使用 `i3.wp.com`。敏感图片不建议开启。</small></span></span>
-                    <input type="checkbox" checked={allowWordpressFallback} onChange={(event) => handleWordpressFallbackChange(event.target.checked)} />
+                    <input className="switch-input" type="checkbox" checked={allowWordpressFallback} onChange={(event) => handleWordpressFallbackChange(event.target.checked)} />
                   </label>
                   <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理本地缓存</button></div>
                 </div>
