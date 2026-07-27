@@ -1,0 +1,86 @@
+name: Verify v0.2.0 Release Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-v020-release-once.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for release assets and record result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: 7df92b1e95e844ff0e705374e891e0f3c1cc0179
+          TARGET_TAG: v0.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github/release-status
+          status_file=.github/release-status/v0.2.0.json
+
+          for attempt in $(seq 1 80); do
+            release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}" 2>/dev/null || true)
+            runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?head_sha=${TARGET_SHA}&per_page=10")
+
+            run_status=$(jq -r '.workflow_runs[0].status // "not_found"' <<<"$runs_json")
+            run_conclusion=$(jq -r '.workflow_runs[0].conclusion // ""' <<<"$runs_json")
+            run_url=$(jq -r '.workflow_runs[0].html_url // ""' <<<"$runs_json")
+
+            if [[ -n "$release_json" ]]; then
+              asset_count=$(jq '.assets | length' <<<"$release_json")
+              has_windows=$(jq '[.assets[].name | select(endswith(".exe"))] | length > 0' <<<"$release_json")
+              has_appimage=$(jq '[.assets[].name | select(endswith(".AppImage"))] | length > 0' <<<"$release_json")
+              has_deb=$(jq '[.assets[].name | select(endswith(".deb"))] | length > 0' <<<"$release_json")
+              dmg_count=$(jq '[.assets[].name | select(endswith(".dmg"))] | length' <<<"$release_json")
+            else
+              asset_count=0
+              has_windows=false
+              has_appimage=false
+              has_deb=false
+              dmg_count=0
+            fi
+
+            complete=false
+            if [[ "$has_windows" == true && "$has_appimage" == true && "$has_deb" == true && "$dmg_count" -ge 2 ]]; then
+              complete=true
+            fi
+
+            if [[ "$run_status" == completed || "$complete" == true ]]; then
+              if [[ -n "$release_json" ]]; then
+                jq --arg workflow_status "$run_status" \
+                   --arg workflow_conclusion "$run_conclusion" \
+                   --arg workflow_url "$run_url" \
+                   --argjson complete "$complete" \
+                   '{tag_name, name, html_url, draft, prerelease, published_at, workflow_status: $workflow_status, workflow_conclusion: $workflow_conclusion, workflow_url: $workflow_url, expected_assets_complete: $complete, assets: [.assets[] | {name, size, browser_download_url}]}' \
+                   <<<"$release_json" > "$status_file"
+              else
+                jq -n --arg workflow_status "$run_status" \
+                      --arg workflow_conclusion "$run_conclusion" \
+                      --arg workflow_url "$run_url" \
+                      '{tag_name: "v0.2.0", release_missing: true, workflow_status: $workflow_status, workflow_conclusion: $workflow_conclusion, workflow_url: $workflow_url, expected_assets_complete: false, assets: []}' > "$status_file"
+              fi
+              break
+            fi
+
+            sleep 15
+          done
+
+          if [[ ! -f "$status_file" ]]; then
+            jq -n '{tag_name: "v0.2.0", verification_timeout: true, expected_assets_complete: false, assets: []}' > "$status_file"
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$status_file"
+          git commit -m "chore: 记录 v0.2.0 发布验证"
+          git push
