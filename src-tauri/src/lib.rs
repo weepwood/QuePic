@@ -373,10 +373,8 @@ async fn cache_and_record_task(
         }
 
         let cached = preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)?;
-        if let Err(error) = database::upsert_cached_preview(&database_path, asset_id, &cached) {
-            let _ = preview::remove_asset_cache(&cache_dir, &sha256);
-            return Err(format!("图片缓存已生成，但保存缓存索引失败：{error}"));
-        }
+        database::upsert_cached_preview(&database_path, asset_id, &cached)
+            .map_err(|error| format!("图片缓存已生成，但保存缓存索引失败：{error}"))?;
         Ok(cached)
     })
     .await
