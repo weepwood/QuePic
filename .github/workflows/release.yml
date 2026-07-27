@@ -70,19 +70,24 @@ jobs:
           tagName: v__VERSION__
           releaseName: QuePic v__VERSION__
           releaseBody: |
-            QuePic v0.2.0 引入本地优先的图片预览与防盗链兼容能力，并重新设计桌面端界面。
+            QuePic v0.2.1 将图片上传请求对齐语雀官网的文档附件上传规范。
 
             ## 主要更新
 
-            - 新上传图片自动保存本地原图并生成 512px 缩略图
-            - 历史图片按需通过 Rust 携带语雀会话回源并补建缓存
-            - 图片库不再直接加载语雀防盗链地址，支持离线浏览已缓存图片
-            - 可选启用 `i3.wp.com` WordPress CDN 作为最后兼容兜底，默认关闭
-            - 新增缓存数量、占用空间、清理缓存和缓存状态展示
-            - 优化上传页、图片库、详情抽屉和设置页 UI
-            - 详情抽屉支持关闭按钮、点击遮罩和 Esc 关闭
-            - 修复缓存写入、删除和清理之间的并发一致性问题
-            - 强化 URL 白名单、重定向限制、大小限制和 Tauri Asset Protocol 访问范围
+            - 上传请求增加 `attachable_type=Doc`、`attachable_id=279127910`、`type=image` 和 `ocr=off`
+            - 每次上传从当前 Cookie 动态提取 `yuque_ctoken`，并作为 `ctoken` 查询参数发送
+            - Referer 对齐目标语雀文档，Origin、Accept、Accept-Language 和 `X-Requested-With` 等主要请求头与官网一致
+            - 支持 gzip、Brotli、deflate 和 Zstandard 压缩响应
+            - 保留 HTTP 库自动生成 Host、Content-Length 和 multipart boundary，避免请求体长度不一致
+            - Cookie 缺少 CSRF Token 时停止上传并提示重新登录
+            - 上传接口继续禁止跨域重定向，降低 Cookie 泄露风险
+            - 保留本地原图、缩略图缓存、离线预览和图片库管理能力
+
+            ## 当前上传目标
+
+            - 类型：语雀文档（Doc）
+            - 文档 ID：`279127910`
+            - 文档地址：`https://www.yuque.com/weepwood/index/xzkrvd5ehffhtwwb`
 
             ## 安装说明
 
