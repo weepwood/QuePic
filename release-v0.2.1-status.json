@@ -16,8 +16,20 @@
     "published_at": "2026-07-27T04:03:37Z",
     "assets": [
       {
+        "name": "QuePic_0.2.1_darwin_aarch64_dmg.dmg",
+        "size": 3170937
+      },
+      {
         "name": "QuePic_0.2.1_darwin_x64_dmg.dmg",
         "size": 3465065
+      },
+      {
+        "name": "QuePic_0.2.1_linux_amd64_appimage.AppImage",
+        "size": 81099256
+      },
+      {
+        "name": "QuePic_0.2.1_linux_amd64_deb.deb",
+        "size": 3456150
       }
     ]
   }
