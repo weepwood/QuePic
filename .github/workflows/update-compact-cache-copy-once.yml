@@ -1,0 +1,45 @@
+name: Update compact cache copy once
+
+on:
+  push:
+    branches: [feat/compact-preview-cache]
+    paths:
+      - .github/workflows/update-compact-cache-copy-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update-copy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/compact-preview-cache
+      - name: Update UI descriptions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/App.tsx')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              '上传成功后保存本地原图，并自动生成 512px 缩略图。即使断网，已缓存图片仍可浏览。':
+                  '上传成功后生成最大 1600px 的空间优化预览和 320px 缩略图。即使断网，已缓存图片仍可浏览。',
+              '<li>新上传图片立即保存原图和 512px 缩略图。</li>':
+                  '<li>新上传图片生成最大 1600px 的压缩预览和 320px 缩略图。</li>',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'missing expected text: {old}')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm .github/workflows/update-compact-cache-copy-once.yml
+      - name: Commit changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/App.tsx .github/workflows/update-compact-cache-copy-once.yml
+          git commit -m "更新空间优化缓存界面说明"
+          git push origin HEAD:feat/compact-preview-cache
