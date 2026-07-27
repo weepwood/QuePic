@@ -1,0 +1,88 @@
+name: Verify v0.2.1 Release Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-v021-release-once.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for release and verify assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: af668af04e768362ad831f10baf1bf6b0a336070
+        run: |
+          set -euo pipefail
+          expected=(
+            QuePic_0.2.1_windows_x64_nsis.exe
+            QuePic_0.2.1_linux_amd64_appimage.AppImage
+            QuePic_0.2.1_linux_amd64_deb.deb
+            QuePic_0.2.1_darwin_aarch64_dmg.dmg
+            QuePic_0.2.1_darwin_x64_dmg.dmg
+          )
+
+          release=''
+          run=''
+          complete=false
+          for attempt in $(seq 1 80); do
+            release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v0.2.1" 2>/dev/null || true)
+            runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?head_sha=${RELEASE_SHA}&per_page=1" 2>/dev/null || true)
+            run=$(printf '%s' "$runs" | jq -c '.workflow_runs[0] // {}')
+
+            if [ -n "$release" ] && [ "$(printf '%s' "$run" | jq -r '.status // empty')" = "completed" ]; then
+              names=$(printf '%s' "$release" | jq -r '.assets[].name')
+              complete=true
+              for asset in "${expected[@]}"; do
+                if ! grep -Fxq "$asset" <<< "$names"; then
+                  complete=false
+                fi
+              done
+              if [ "$complete" = true ]; then
+                break
+              fi
+            fi
+            sleep 15
+          done
+
+          if [ -z "$release" ]; then
+            echo '未找到 v0.2.1 Release' >&2
+            exit 1
+          fi
+
+          status=$(printf '%s' "$run" | jq -r '.status // "unknown"')
+          conclusion=$(printf '%s' "$run" | jq -r '.conclusion // ""')
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ] || [ "$complete" != true ]; then
+            echo "Release 验证失败：status=$status conclusion=$conclusion assets_complete=$complete" >&2
+            exit 1
+          fi
+
+          printf '%s' "$release" | jq --arg status "$status" --arg conclusion "$conclusion" --arg run_url "$(printf '%s' "$run" | jq -r '.html_url')" '{
+            tag_name,
+            name,
+            html_url,
+            draft,
+            prerelease,
+            published_at,
+            workflow_status: $status,
+            workflow_conclusion: $conclusion,
+            workflow_url: $run_url,
+            expected_assets_complete: true,
+            assets: [.assets[] | {name, size, browser_download_url}]
+          }' > release-v0.2.1-verification.json
+
+      - name: Commit verification report
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add release-v0.2.1-verification.json
+          git commit -m "验证 QuePic v0.2.1 发布产物"
+          git push
