@@ -35,4 +35,4 @@ jobs:
           git commit -m "记录 QuePic v0.2.1 发布状态"
           git push
 
-# refresh: 2
+# refresh: 3
