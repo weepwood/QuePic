@@ -4,7 +4,11 @@ mod models;
 mod preview;
 mod yuque;
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use chrono::Utc;
 use models::{
@@ -35,6 +39,7 @@ const ALLOWED_MIME_TYPES: &[&str] = &[
 struct AppState {
     database_path: PathBuf,
     preview_cache_dir: PathBuf,
+    cache_lock: Arc<Mutex<()>>,
 }
 
 #[tauri::command]
@@ -138,25 +143,33 @@ fn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {
 async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, String> {
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
+    let cache_lock = state.cache_lock.clone();
     drop(state);
 
-    tauri::async_runtime::spawn_blocking(move || preview::clear_cache(&preview_cache_dir))
-        .await
-        .map_err(|error| format!("清理图片缓存任务失败：{error}"))??;
-    database::clear_previews(&database_path)?;
-    database::cache_stats(&database_path)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = cache_lock
+            .lock()
+            .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+        preview::clear_cache(&preview_cache_dir)?;
+        database::clear_previews(&database_path)?;
+        database::cache_stats(&database_path)
+    })
+    .await
+    .map_err(|error| format!("清理图片缓存任务失败：{error}"))?
 }
 
 #[tauri::command]
 fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let asset = database::find_by_id(&state.database_path, id)?;
-    database::delete_asset(&state.database_path, id)?;
+    let _guard = state
+        .cache_lock
+        .lock()
+        .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+
     if let Some(asset) = asset {
-        if let Err(error) = preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256) {
-            return Err(format!("本地索引已删除，但清理图片缓存失败：{error}"));
-        }
+        preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256)?;
     }
-    Ok(())
+    database::delete_asset(&state.database_path, id)
 }
 
 #[tauri::command]
@@ -169,13 +182,20 @@ async fn ensure_preview(
 ) -> Result<PreviewResult, String> {
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
+    let cache_lock = state.cache_lock.clone();
     drop(state);
 
     let asset = database::find_by_id(&database_path, asset_id)?
         .ok_or_else(|| "图片记录不存在。".to_string())?;
 
     if !force_refresh {
-        if let Some(path) = existing_local_path(&asset, prefer_original) {
+        let existing = {
+            let _guard = cache_lock
+                .lock()
+                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+            existing_local_path(&asset, prefer_original)
+        };
+        if let Some(path) = existing {
             return Ok(local_preview_result(asset_id, path));
         }
     }
@@ -187,16 +207,17 @@ async fn ensure_preview(
 
     match download_result {
         Ok(downloaded) => {
-            let sha256 = asset.sha256.clone();
-            let cache_dir = preview_cache_dir.clone();
-            let mime_type = downloaded.mime_type;
-            let preview = tauri::async_runtime::spawn_blocking(move || {
-                preview::cache_image(&cache_dir, &sha256, &mime_type, &downloaded.bytes)
-            })
-            .await
-            .map_err(|error| format!("建立图片缓存任务失败：{error}"))??;
+            let preview = cache_and_record_task(
+                cache_lock,
+                preview_cache_dir,
+                database_path,
+                asset_id,
+                asset.sha256,
+                downloaded.mime_type,
+                downloaded.bytes,
+            )
+            .await?;
 
-            database::upsert_cached_preview(&database_path, asset_id, &preview)?;
             let path = if prefer_original {
                 preview.original_path
             } else {
@@ -231,6 +252,7 @@ async fn upload_image(
     validate_upload(&input)?;
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
+    let cache_lock = state.cache_lock.clone();
     drop(state);
 
     let account_name = normalize_account_name(&input.account_name)?;
@@ -241,20 +263,27 @@ async fn upload_image(
     let cache_bytes = input.bytes.clone();
 
     if let Some(existing) = database::find_by_hash(&database_path, &sha256)? {
-        if !preview::preview_exists(
-            existing.original_path.as_deref(),
-            existing.thumbnail_path.as_deref(),
-        ) {
-            if let Ok(cached) = cache_image_task(
+        let preview_missing = {
+            let _guard = cache_lock
+                .lock()
+                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+            !preview::preview_exists(
+                existing.original_path.as_deref(),
+                existing.thumbnail_path.as_deref(),
+            )
+        };
+
+        if preview_missing {
+            let _ = cache_and_record_task(
+                cache_lock,
                 preview_cache_dir,
+                database_path.clone(),
+                existing.id,
                 sha256,
                 input.mime_type.clone(),
                 cache_bytes,
             )
-            .await
-            {
-                database::upsert_cached_preview(&database_path, existing.id, &cached)?;
-            }
+            .await;
         }
         let asset = database::find_by_id(&database_path, existing.id)?.unwrap_or(existing);
         return Ok(UploadResult {
@@ -304,18 +333,18 @@ async fn upload_image(
         }
     };
 
-    match cache_image_task(
+    if let Err(error) = cache_and_record_task(
+        cache_lock,
         preview_cache_dir,
+        database_path.clone(),
+        saved_asset.id,
         sha256,
         input.mime_type,
         cache_bytes,
     )
     .await
     {
-        Ok(cached) => database::upsert_cached_preview(&database_path, saved_asset.id, &cached)?,
-        Err(error) => {
-            let _ = database::mark_preview_error(&database_path, saved_asset.id, &error);
-        }
+        let _ = database::mark_preview_error(&database_path, saved_asset.id, &error);
     }
 
     let refreshed = database::find_by_id(&database_path, saved_asset.id)?.unwrap_or(saved_asset);
@@ -325,14 +354,30 @@ async fn upload_image(
     })
 }
 
-async fn cache_image_task(
+async fn cache_and_record_task(
+    cache_lock: Arc<Mutex<()>>,
     cache_dir: PathBuf,
+    database_path: PathBuf,
+    asset_id: i64,
     sha256: String,
     mime_type: String,
     bytes: Vec<u8>,
 ) -> Result<CachedPreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)
+        let _guard = cache_lock
+            .lock()
+            .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+
+        if database::find_by_id(&database_path, asset_id)?.is_none() {
+            return Err("图片记录已删除，已取消建立缓存。".into());
+        }
+
+        let cached = preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)?;
+        if let Err(error) = database::upsert_cached_preview(&database_path, asset_id, &cached) {
+            let _ = preview::remove_asset_cache(&cache_dir, &sha256);
+            return Err(format!("图片缓存已生成，但保存缓存索引失败：{error}"));
+        }
+        Ok(cached)
     })
     .await
     .map_err(|error| format!("建立图片缓存任务失败：{error}"))?
@@ -418,6 +463,7 @@ pub fn run() {
             app.manage(AppState {
                 database_path,
                 preview_cache_dir,
+                cache_lock: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
