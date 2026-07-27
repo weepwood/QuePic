@@ -2,6 +2,7 @@ use std::{
     fs,
     io::Cursor,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::Utc;
@@ -99,12 +100,32 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "图片缓存路径无效。".to_string())?;
-    let temporary = path.with_file_name(format!(".{file_name}.tmp"));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = path.with_file_name(format!(".{file_name}.{nonce}.tmp"));
+    let backup = path.with_file_name(format!(".{file_name}.{nonce}.bak"));
+
     fs::write(&temporary, bytes).map_err(|error| format!("无法写入图片缓存临时文件：{error}"))?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| format!("无法替换旧图片缓存：{error}"))?;
+
+    if !path.exists() {
+        return fs::rename(&temporary, path)
+            .map_err(|error| format!("无法提交图片缓存文件：{error}"));
     }
-    fs::rename(&temporary, path).map_err(|error| format!("无法提交图片缓存文件：{error}"))
+
+    fs::rename(path, &backup).map_err(|error| format!("无法备份旧图片缓存：{error}"))?;
+    match fs::rename(&temporary, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(backup);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&backup, path);
+            let _ = fs::remove_file(temporary);
+            Err(format!("无法提交图片缓存文件：{error}"))
+        }
+    }
 }
 
 fn asset_cache_dir(cache_root: &Path, sha256: &str) -> Result<PathBuf, String> {
@@ -168,5 +189,22 @@ mod tests {
         assert_eq!(extension_for_mime("image/jpeg"), "jpg");
         assert_eq!(extension_for_mime("image/svg+xml"), "svg");
         assert_eq!(extension_for_mime("application/octet-stream"), "img");
+    }
+
+    #[test]
+    fn replaces_cache_file_without_losing_previous_content() {
+        let root = std::env::temp_dir().join(format!(
+            "quepic-preview-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("image.bin");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        let _ = fs::remove_dir_all(root);
     }
 }
