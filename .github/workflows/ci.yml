@@ -24,7 +24,9 @@ jobs:
           ref: feat/compact-preview-cache
           fetch-depth: 0
       - name: Apply optimization
-        run: python .github/scripts/apply_large_upload_queue_optimization.py
+        run: |
+          sed -i 's/item.result.asset.remote_url/item.result?.asset.remote_url/' .github/scripts/apply_large_upload_queue_optimization.py
+          python .github/scripts/apply_large_upload_queue_optimization.py
       - name: Build React frontend
         id: optimized_frontend
         continue-on-error: true
