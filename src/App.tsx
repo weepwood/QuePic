@@ -22,7 +22,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AssetPreview } from './components/AssetPreview';
 import {
@@ -41,6 +41,96 @@ import type { AssetRecord, CacheStats, UploadQueueItem, ViewKey } from './types'
 
 const DEFAULT_ACCOUNT = 'default';
 const EMPTY_CACHE_STATS: CacheStats = { asset_count: 0, cached_count: 0, cache_bytes: 0 };
+
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const QUEUE_PREVIEW_EDGE = 160;
+const QUEUE_PREVIEW_CONCURRENCY = 3;
+
+interface QueueItemRowProps {
+  item: UploadQueueItem;
+  onRetry: (id: string) => void;
+  onCopy: (value: string) => void;
+  onRemove: (id: string) => void;
+}
+
+const QueueItemRow = memo(function QueueItemRow({ item, onRetry, onCopy, onRemove }: QueueItemRowProps) {
+  return (
+    <article className="queue-item">
+      <img src={item.previewUrl} alt="" loading="lazy" decoding="async" draggable={false} />
+      <div>
+        <strong>{item.file.name}</strong>
+        <small>{formatBytes(item.file.size)}{item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}</small>
+        {item.status === 'failed' && <b className="error-text">{item.error}</b>}
+        {item.status === 'success' && <b className="success-text"><Check size={13} />{item.result?.deduplicated ? '复用历史链接并补建缓存' : '上传并缓存成功'}</b>}
+      </div>
+      <div className="item-actions">
+        {item.status === 'uploading' && <LoaderCircle className="spin" size={18} />}
+        {item.status === 'failed' && <button onClick={() => onRetry(item.id)}>重试</button>}
+        {item.status === 'success' && item.result && <button title="复制 Markdown" onClick={() => onCopy(`![${item.file.name}](${item.result?.asset.remote_url})`)}><Copy size={15} /></button>}
+        <button title="移除" onClick={() => onRemove(item.id)}><X size={15} /></button>
+      </div>
+    </article>
+  );
+});
+
+async function createQueueItem(file: File): Promise<UploadQueueItem> {
+  let width: number | null = null;
+  let height: number | null = null;
+  let previewUrl = '';
+  let bitmap: ImageBitmap | null = null;
+
+  try {
+    bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    const scale = Math.min(1, QUEUE_PREVIEW_EDGE / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext('2d', { alpha: true });
+    if (!context) throw new Error('无法创建图片预览画布。');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const previewBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error('无法生成队列预览。')),
+        'image/webp',
+        0.72,
+      );
+    });
+    previewUrl = URL.createObjectURL(previewBlob);
+  } catch {
+    previewUrl = URL.createObjectURL(file);
+  } finally {
+    bitmap?.close();
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    file,
+    previewUrl,
+    width,
+    height,
+    status: 'waiting',
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
 
 export default function App() {
   const [view, setView] = useState<ViewKey>('upload');
@@ -238,34 +328,15 @@ export default function App() {
   };
 
   const addFiles = async (files: File[]) => {
-    const accepted = files.filter((file) => file.type.startsWith('image/') && file.size <= 25 * 1024 * 1024);
+    const accepted = files.filter((file) => file.type.startsWith('image/') && file.size <= MAX_UPLOAD_BYTES);
     if (accepted.length !== files.length) {
-      showToast('error', '已忽略非图片文件或超过 25 MB 的图片。');
+      showToast('error', '已忽略非图片文件或超过 50 MB 的图片。');
     }
-    const items = await Promise.all(accepted.map(async (file): Promise<UploadQueueItem> => {
-      let width: number | null = null;
-      let height: number | null = null;
-      try {
-        const bitmap = await createImageBitmap(file);
-        width = bitmap.width;
-        height = bitmap.height;
-        bitmap.close();
-      } catch {
-        // SVG 等格式仍可上传，尺寸留空。
-      }
-      return {
-        id: crypto.randomUUID(),
-        file,
-        previewUrl: URL.createObjectURL(file),
-        width,
-        height,
-        status: 'waiting',
-      };
-    }));
+    const items = await mapWithConcurrency(accepted, QUEUE_PREVIEW_CONCURRENCY, createQueueItem);
     setQueue((current) => [...items, ...current]);
   };
 
-  const uploadOne = async (id: string) => {
+  const uploadOne = useCallback(async (id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || item.status === 'uploading') return;
     setQueue((current) => current.map((candidate) =>
@@ -282,7 +353,7 @@ export default function App() {
         candidate.id === id ? { ...candidate, status: 'failed', error: normalizeError(error) } : candidate,
       ));
     }
-  };
+  }, [accountName, refreshAssets, refreshCacheStats]);
 
   const uploadAll = async () => {
     if (!credentialReady) {
@@ -296,18 +367,18 @@ export default function App() {
     for (const id of ids) await uploadOne(id);
   };
 
-  const copyText = async (value: string) => {
+  const copyText = useCallback(async (value: string) => {
     await navigator.clipboard.writeText(value);
     showToast('success', '已复制到剪贴板');
-  };
+  }, [showToast]);
 
-  const removeQueueItem = (id: string) => {
+  const removeQueueItem = useCallback((id: string) => {
     setQueue((current) => {
       const target = current.find((item) => item.id === id);
       if (target) URL.revokeObjectURL(target.previewUrl);
       return current.filter((item) => item.id !== id);
     });
-  };
+  }, []);
 
   const handleDeleteAsset = async (asset: AssetRecord) => {
     try {
@@ -376,7 +447,7 @@ export default function App() {
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
                 <p>上传成功后生成最大 1600px 的空间优化预览和 320px 缩略图。即使断网，已缓存图片仍可浏览。</p>
-                <div className="drop-hints"><span>单张 25 MB</span><span>自动去重</span><span>离线预览</span></div>
+                <div className="drop-hints"><span>单张 50 MB</span><span>自动去重</span><span>离线预览</span></div>
                 <div className="actions">
                   <button className="button primary" onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" onClick={async () => {
@@ -403,11 +474,13 @@ export default function App() {
                 {queue.length === 0 ? <div className="empty"><FileImage size={26} /><p>待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {queue.map((item) => (
-                      <article className="queue-item" key={item.id}>
-                        <img src={item.previewUrl} alt="" />
-                        <div><strong>{item.file.name}</strong><small>{formatBytes(item.file.size)}{item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}</small>{item.status === 'failed' && <b className="error-text">{item.error}</b>}{item.status === 'success' && <b className="success-text"><Check size={13} />{item.result?.deduplicated ? '复用历史链接并补建缓存' : '上传并缓存成功'}</b>}</div>
-                        <div className="item-actions">{item.status === 'uploading' && <LoaderCircle className="spin" size={18} />}{item.status === 'failed' && <button onClick={() => void uploadOne(item.id)}>重试</button>}{item.status === 'success' && item.result && <button title="复制 Markdown" onClick={() => void copyText(`![${item.file.name}](${item.result?.asset.remote_url})`)}><Copy size={15} /></button>}<button title="移除" onClick={() => removeQueueItem(item.id)}><X size={15} /></button></div>
-                      </article>
+                      <QueueItemRow
+                        key={item.id}
+                        item={item}
+                        onRetry={uploadOne}
+                        onCopy={copyText}
+                        onRemove={removeQueueItem}
+                      />
                     ))}
                   </div>
                 )}
