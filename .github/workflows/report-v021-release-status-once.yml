@@ -34,3 +34,5 @@ jobs:
           git add release-v0.2.1-status.json
           git commit -m "记录 QuePic v0.2.1 发布状态"
           git push
+
+# refresh: 2
