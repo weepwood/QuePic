@@ -1,6 +1,6 @@
 [package]
 name = "quepic"
-version = "0.1.1"
+version = "0.2.0"
 description = "本地优先的语雀图片上传与管理工具"
 authors = ["weepwood"]
 edition = "2021"
@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
@@ -24,6 +24,7 @@ sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+image = { version = "=0.25.5", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
 [profile.release]
 codegen-units = 1

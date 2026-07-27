@@ -11,6 +11,13 @@ export interface AssetRecord {
   remote_url: string;
   account_name: string;
   uploaded_at: string;
+  original_path: string | null;
+  thumbnail_path: string | null;
+  preview_source: 'local' | 'wordpress_proxy' | 'missing' | string;
+  cache_status: 'ready' | 'missing' | 'error' | string;
+  cache_bytes: number | null;
+  cached_at: string | null;
+  last_error: string | null;
 }
 
 export interface UploadResult {
@@ -34,4 +41,19 @@ export interface UploadQueueItem {
 export interface CredentialStatus {
   configured: boolean;
   account_name: string;
+}
+
+export interface PreviewResult {
+  asset_id: number;
+  local_path: string | null;
+  proxy_url: string | null;
+  source: 'local' | 'wordpress_proxy' | 'missing' | string;
+  cached: boolean;
+  last_error: string | null;
+}
+
+export interface CacheStats {
+  asset_count: number;
+  cached_count: number;
+  cache_bytes: number;
 }
