@@ -1,0 +1,36 @@
+name: Report v0.2.1 Release Status Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/report-v021-release-status-once.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: af668af04e768362ad831f10baf1bf6b0a336070
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?head_sha=${RELEASE_SHA}&per_page=1")
+          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v0.2.1" 2>/dev/null || echo '{}')
+          jq -n --argjson runs "$runs" --argjson release "$release" '{
+            workflow_run: ($runs.workflow_runs[0] // {} | {id, status, conclusion, html_url, created_at, updated_at}),
+            release: ($release | {tag_name, name, html_url, draft, prerelease, published_at, assets: [.assets[]? | {name, size}]})
+          }' > release-v0.2.1-status.json
+      - name: Commit report
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add release-v0.2.1-status.json
+          git commit -m "记录 QuePic v0.2.1 发布状态"
+          git push
