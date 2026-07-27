@@ -3,6 +3,13 @@ use serde::Deserialize;
 use url::Url;
 
 const UPLOAD_ENDPOINT: &str = "https://www.yuque.com/api/upload/attach";
+const UPLOAD_ATTACHABLE_ID: i64 = 279_127_910;
+const UPLOAD_REFERER: &str = "https://www.yuque.com/weepwood/index/xzkrvd5ehffhtwwb";
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+const BROWSER_ACCEPT: &str = "text/javascript, text/html, application/xml, text/xml, */*";
+const BROWSER_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7";
+const BROWSER_ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
+const BROWSER_CLIENT_HINT: &str = "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Microsoft Edge\";v=\"150\"";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_IMAGE_DOWNLOAD_BYTES: usize = 30 * 1024 * 1024;
 const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &["yuque.com", "nlark.com"];
@@ -30,6 +37,7 @@ pub async fn upload(
     mime_type: &str,
     bytes: Vec<u8>,
 ) -> Result<String, String> {
+    let upload_url = build_doc_upload_url(cookie)?;
     let part = multipart::Part::bytes(bytes)
         .file_name(file_name.to_string())
         .mime_str(mime_type)
@@ -38,12 +46,21 @@ pub async fn upload(
 
     let client = secure_client(std::time::Duration::from_secs(90))?;
     let response = client
-        .post(UPLOAD_ENDPOINT)
+        .post(upload_url)
         .header(header::COOKIE, cookie)
-        .header(header::REFERER, "https://www.yuque.com/")
+        .header(header::REFERER, UPLOAD_REFERER)
         .header(header::ORIGIN, "https://www.yuque.com")
-        .header(header::ACCEPT, "application/json, text/plain, */*")
-        .header(header::USER_AGENT, "QuePic/0.2")
+        .header(header::ACCEPT, BROWSER_ACCEPT)
+        .header(header::ACCEPT_LANGUAGE, BROWSER_ACCEPT_LANGUAGE)
+        .header(header::ACCEPT_ENCODING, BROWSER_ACCEPT_ENCODING)
+        .header(header::USER_AGENT, BROWSER_USER_AGENT)
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Sec-Fetch-Dest", "empty")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("sec-ch-ua", BROWSER_CLIENT_HINT)
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Windows\"")
         .multipart(form)
         .send()
         .await
@@ -51,7 +68,7 @@ pub async fn upload(
 
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err("语雀 Cookie 已失效或权限不足，请重新登录。".into());
+        return Err("语雀 Cookie、ctoken 已失效或文档权限不足，请重新登录。".into());
     }
     if status.is_redirection() {
         return Err("语雀上传接口返回了重定向。为避免 Cookie 泄露，QuePic 已拒绝继续请求。".into());
@@ -92,15 +109,38 @@ pub async fn upload(
     normalize_remote_url(&raw_url)
 }
 
+fn build_doc_upload_url(cookie: &str) -> Result<Url, String> {
+    let ctoken = cookie_value(cookie, "yuque_ctoken")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "语雀 Cookie 中缺少 yuque_ctoken，请重新登录后再上传。".to_string())?;
+    let mut url = Url::parse(UPLOAD_ENDPOINT)
+        .map_err(|error| format!("语雀上传地址无效：{error}"))?;
+    url.query_pairs_mut()
+        .append_pair("attachable_type", "Doc")
+        .append_pair("attachable_id", &UPLOAD_ATTACHABLE_ID.to_string())
+        .append_pair("type", "image")
+        .append_pair("ocr", "off")
+        .append_pair("ctoken", &ctoken);
+    Ok(url)
+}
+
+fn cookie_value(cookie: &str, name: &str) -> Option<String> {
+    cookie
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find(|(key, _)| key.trim() == name)
+        .map(|(_, value)| value.trim().to_string())
+}
+
 pub async fn download_image(cookie: &str, remote_url: &str) -> Result<DownloadedImage, String> {
     let normalized = normalize_remote_url(remote_url)?;
     let client = secure_client(std::time::Duration::from_secs(60))?;
     let mut response = client
         .get(&normalized)
         .header(header::COOKIE, cookie)
-        .header(header::REFERER, "https://www.yuque.com/")
+        .header(header::REFERER, UPLOAD_REFERER)
         .header(header::ACCEPT, "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-        .header(header::USER_AGENT, "Mozilla/5.0 QuePic/0.2")
+        .header(header::USER_AGENT, BROWSER_USER_AGENT)
         .send()
         .await
         .map_err(|error| format!("从语雀回源图片失败：{error}"))?;
@@ -208,7 +248,24 @@ fn secure_client(timeout: std::time::Duration) -> Result<reqwest::Client, String
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_remote_url, wordpress_proxy_url};
+    use super::{build_doc_upload_url, cookie_value, normalize_remote_url, wordpress_proxy_url};
+
+    #[test]
+    fn builds_official_doc_upload_context() {
+        let url = build_doc_upload_url("lang=zh-cn; yuque_ctoken=test-token; current_theme=default").unwrap();
+        let query = url.query_pairs().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query.get("attachable_type").map(|value| value.as_ref()), Some("Doc"));
+        assert_eq!(query.get("attachable_id").map(|value| value.as_ref()), Some("279127910"));
+        assert_eq!(query.get("type").map(|value| value.as_ref()), Some("image"));
+        assert_eq!(query.get("ocr").map(|value| value.as_ref()), Some("off"));
+        assert_eq!(query.get("ctoken").map(|value| value.as_ref()), Some("test-token"));
+    }
+
+    #[test]
+    fn requires_ctoken_from_cookie() {
+        assert_eq!(cookie_value("a=1; yuque_ctoken=abc-123; b=2", "yuque_ctoken").as_deref(), Some("abc-123"));
+        assert!(build_doc_upload_url("a=1; b=2").is_err());
+    }
 
     #[test]
     fn accepts_yuque_cdn_urls() {
