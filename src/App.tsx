@@ -375,7 +375,7 @@ export default function App() {
                 <span className="drop-eyebrow">LOCAL-FIRST UPLOAD</span>
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
-                <p>上传成功后保存本地原图，并自动生成 512px 缩略图。即使断网，已缓存图片仍可浏览。</p>
+                <p>上传成功后生成最大 1600px 的空间优化预览和 320px 缩略图。即使断网，已缓存图片仍可浏览。</p>
                 <div className="drop-hints"><span>单张 25 MB</span><span>自动去重</span><span>离线预览</span></div>
                 <div className="actions">
                   <button className="button primary" onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
@@ -470,7 +470,7 @@ export default function App() {
                   <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理本地缓存</button></div>
                 </div>
               </div>
-              <div className="guide"><ShieldCheck size={24} /><div><h3>本地优先显示</h3><ol><li>新上传图片立即保存原图和 512px 缩略图。</li><li>历史图片接近可视区域时才按需回源。</li><li>回源请求只允许语雀和 nlark 域名，不跟随重定向。</li><li>本地文件仅通过受限的 Tauri Asset Protocol 暴露。</li><li>WordPress 代理默认关闭，只作为实验兼容选项。</li></ol></div></div>
+              <div className="guide"><ShieldCheck size={24} /><div><h3>本地优先显示</h3><ol><li>新上传图片生成最大 1600px 的压缩预览和 320px 缩略图。</li><li>历史图片接近可视区域时才按需回源。</li><li>回源请求只允许语雀和 nlark 域名，不跟随重定向。</li><li>本地文件仅通过受限的 Tauri Asset Protocol 暴露。</li><li>WordPress 代理默认关闭，只作为实验兼容选项。</li></ol></div></div>
             </div>
           )}
         </section>
