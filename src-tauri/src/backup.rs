@@ -290,6 +290,7 @@ fn restore_backup_archive(
             replace_database(database_path, &imported_database)?;
             database::initialize(database_path)?;
             accounts::initialize(database_path)?;
+            accounts::import_account_names(database_path, &settings.account_names)?;
             database::clear_previews(database_path)?;
 
             preview::clear_cache(preview_cache_dir)?;
