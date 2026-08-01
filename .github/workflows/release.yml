@@ -70,24 +70,45 @@ jobs:
           tagName: v__VERSION__
           releaseName: QuePic v__VERSION__
           releaseBody: |
-            QuePic v0.2.1 将图片上传请求对齐语雀官网的文档附件上传规范。
+            QuePic v0.3.0 新增文件夹图片批量创建语雀文档，并全面优化界面、缓存体积和大队列性能。
 
             ## 主要更新
 
-            - 上传请求增加 `attachable_type=Doc`、`attachable_id=279127910`、`type=image` 和 `ocr=off`
-            - 每次上传从当前 Cookie 动态提取 `yuque_ctoken`，并作为 `ctoken` 查询参数发送
-            - Referer 对齐目标语雀文档，Origin、Accept、Accept-Language 和 `X-Requested-With` 等主要请求头与官网一致
-            - 支持 gzip、Brotli、deflate 和 Zstandard 压缩响应
-            - 保留 HTTP 库自动生成 Host、Content-Length 和 multipart boundary，避免请求体长度不一致
-            - Cookie 缺少 CSRF Token 时停止上传并提示重新登录
-            - 上传接口继续禁止跨域重定向，降低 Cookie 泄露风险
-            - 保留本地原图、缩略图缓存、离线预览和图片库管理能力
+            ### 文件夹转语雀文档
 
-            ## 当前上传目标
+            - 选择本地文件夹后递归读取其中的图片
+            - 文档标题自动使用顶层文件夹名称
+            - 按完整相对路径进行中文自然排序，保证 `1、2、10` 顺序稳定
+            - 图片按排序结果串行上传，Markdown 正文顺序与预览一致
+            - 使用语雀 OpenAPI Token 创建目标知识库文档
+            - Token 仅保存在当前界面内存中，不写入本地存储
+            - 上传失败可复用现有 SHA-256 去重结果继续重试
 
-            - 类型：语雀文档（Doc）
-            - 文档 ID：`279127910`
-            - 文档地址：`https://www.yuque.com/weepwood/index/xzkrvd5ehffhtwwb`
+            ### 界面与交互
+
+            - 整体界面统一为语雀绿色与 Ant Design 风格
+            - 上传页、图片库、设置页、详情抽屉、状态提示和弹窗使用统一视觉令牌
+            - 移除大面积紫色渐变、毛玻璃和过重阴影
+            - 优化按钮、输入框、导航、卡片和反馈状态的一致性
+
+            ### 缓存与性能
+
+            - 普通图片缓存改为压缩详情预览与缩略图，显著降低磁盘占用
+            - 详情预览最长边限制为 1600px，图库缩略图最长边限制为 320px
+            - 上传队列使用 160px 小预览、最多 3 路并发解码和离屏渲染优化
+            - 前后端图片上传与回源上限统一提升到 50 MB
+            - 保留 GIF、SVG 和 AVIF 源格式，避免动画、矢量和兼容性损失
+
+            ### 稳定性与安全
+
+            - 兼容 MIME 缺失或被标记为 `application/octet-stream` 的图片
+            - OpenAPI 客户端禁止自动重定向，避免 Token 被带离固定语雀接口
+            - 图片上传与回源继续执行 HTTPS、域名白名单、响应大小和重定向限制
+            - 修复 Rust 错误信息解析的生命周期编译问题
+
+            ## 使用说明
+
+            文件夹批量上传仍使用 QuePic 已保存的语雀登录会话上传图片；OpenAPI Token 仅用于创建 Markdown 文档。新建文档不会自动加入知识库目录，需要在语雀中手动加入目录。
 
             ## 安装说明
 
