@@ -1,4 +1,4 @@
-export type ViewKey = 'upload' | 'library' | 'settings';
+export type ViewKey = 'upload' | 'document' | 'library' | 'settings';
 
 export interface AssetRecord {
   id: number;
@@ -11,9 +11,10 @@ export interface AssetRecord {
   remote_url: string;
   account_name: string;
   uploaded_at: string;
+  category: string;
   original_path: string | null;
   thumbnail_path: string | null;
-  preview_source: 'local' | 'wordpress_proxy' | 'missing' | string;
+  preview_source: 'local' | 'remote_url' | 'yuque_session' | 'wordpress_proxy' | 'missing' | string;
   cache_status: 'ready' | 'missing' | 'error' | string;
   cache_bytes: number | null;
   cached_at: string | null;
@@ -43,11 +44,16 @@ export interface CredentialStatus {
   account_name: string;
 }
 
+export interface SecretStatus {
+  configured: boolean;
+  account_name: string;
+}
+
 export interface PreviewResult {
   asset_id: number;
   local_path: string | null;
   proxy_url: string | null;
-  source: 'local' | 'wordpress_proxy' | 'missing' | string;
+  source: 'local' | 'remote_url' | 'yuque_session' | 'wordpress_proxy' | 'missing' | string;
   cached: boolean;
   last_error: string | null;
 }
@@ -58,8 +64,18 @@ export interface CacheStats {
   cache_bytes: number;
 }
 
+export interface UploadQuotaStatus {
+  account_name: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  retry_after_seconds: number;
+  reset_at: string | null;
+  minimum_interval_seconds: number;
+}
+
 export interface CreateYuqueDocumentInput {
-  token: string;
+  account_name: string;
   book_id: number;
   title: string;
   body: string;
