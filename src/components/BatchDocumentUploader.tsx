@@ -4,22 +4,31 @@ import {
   CheckCircle2,
   FileImage,
   FolderUp,
+  Gauge,
   LoaderCircle,
-  X,
 } from 'lucide-react';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import type React from 'react';
 
-import { createYuqueDocument, getCredentialStatus, uploadImage } from '../lib/tauri';
-import type { YuqueDocumentResult } from '../types';
+import {
+  createYuqueDocument,
+  getCredentialStatus,
+  getOpenApiTokenStatus,
+  getUploadQuotaStatus,
+  uploadImage,
+} from '../lib/tauri';
+import type { UploadQuotaStatus, YuqueDocumentResult } from '../types';
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSION = /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
-const FILE_NAME_COLLATOR = new Intl.Collator('zh-CN', {
-  numeric: true,
-  sensitivity: 'base',
-});
+const FILE_NAME_COLLATOR = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
 
 type UploadStage = 'idle' | 'uploading' | 'creating';
+
+interface BatchDocumentUploaderProps {
+  accountName: string;
+  onUploaded?: () => void;
+}
 
 interface ProgressState {
   stage: UploadStage;
@@ -39,8 +48,7 @@ function pathInsideFolder(file: File): string {
 
 function folderFromFiles(files: File[]): string {
   const firstPath = files[0] ? relativePath(files[0]) : '';
-  const folderName = firstPath.split('/')[0]?.trim();
-  return folderName || '图片文档';
+  return firstPath.split('/')[0]?.trim() || '图片文档';
 }
 
 function isImage(file: File): boolean {
@@ -54,19 +62,22 @@ function escapeMarkdownAlt(value: string): string {
 function normalizeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
-  return '操作失败，请检查语雀登录状态、Token 和知识库 ID。';
+  return '操作失败，请检查语雀登录状态、Token、知识库 ID 和上传额度。';
 }
 
-export function BatchDocumentUploader() {
+function formatResetTime(value: string | null): string {
+  if (!value) return '暂无限制';
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocumentUploaderProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [folderName, setFolderName] = useState('');
-  const [accountName, setAccountName] = useState(
-    () => localStorage.getItem('quepic-account') || 'default',
-  );
   const [bookId, setBookId] = useState(() => localStorage.getItem('quepic-book-id') || '');
-  const [token, setToken] = useState('');
+  const [credentialReady, setCredentialReady] = useState(false);
+  const [tokenReady, setTokenReady] = useState(false);
+  const [quota, setQuota] = useState<UploadQuotaStatus | null>(null);
   const [progress, setProgress] = useState<ProgressState>({
     stage: 'idle',
     current: 0,
@@ -87,20 +98,33 @@ export function BatchDocumentUploader() {
   }, []);
 
   useEffect(() => {
-    if (!open) return undefined;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !running) setOpen(false);
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const [credential, token, nextQuota] = await Promise.all([
+          getCredentialStatus(accountName),
+          getOpenApiTokenStatus(accountName),
+          getUploadQuotaStatus(accountName),
+        ]);
+        if (disposed) return;
+        setCredentialReady(credential.configured);
+        setTokenReady(token.configured);
+        setQuota(nextQuota);
+      } catch (statusError) {
+        if (!disposed) setError(normalizeError(statusError));
+      }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, running]);
+    void refresh();
+    return () => {
+      disposed = true;
+    };
+  }, [accountName]);
 
   const selectFolder = () => inputRef.current?.click();
 
   const handleFolderChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.currentTarget.files || []);
     event.currentTarget.value = '';
-
     const validImages = selected
       .filter((file) => isImage(file) && file.size > 0 && file.size <= MAX_UPLOAD_BYTES)
       .sort((left, right) => FILE_NAME_COLLATOR.compare(relativePath(left), relativePath(right)));
@@ -112,7 +136,7 @@ export function BatchDocumentUploader() {
 
     const ignoredCount = selected.length - validImages.length;
     if (validImages.length === 0) {
-      setError('所选文件夹中没有可上传的图片。支持常见图片格式，单张图片不能超过 50 MB。');
+      setError('所选文件夹中没有可上传的图片。支持常见图片格式，单张不能超过 50 MB。');
     } else if (ignoredCount > 0) {
       setError(`已忽略 ${ignoredCount} 个非图片、空文件或超过 50 MB 的文件。`);
     }
@@ -124,42 +148,25 @@ export function BatchDocumentUploader() {
     setFolderName('');
     setError('');
     setResult(null);
-    setProgress({ stage: 'idle', current: 0, total: 0, fileName: '' });
   };
 
   const startUpload = async () => {
-    const account = accountName.trim();
     const parsedBookId = Number(bookId.trim());
-    const openApiToken = token.trim();
-
-    if (files.length === 0) {
-      setError('请先选择一个包含图片的文件夹。');
-      return;
-    }
-    if (!account) {
-      setError('上传账号名称不能为空。');
-      return;
-    }
+    if (files.length === 0) return setError('请先选择一个包含图片的文件夹。');
+    if (!credentialReady) return setError('当前账号尚未保存语雀登录会话，请先前往设置完成登录。');
+    if (!tokenReady) return setError('当前账号尚未保存 OpenAPI Token，请先前往设置保存。');
     if (!Number.isSafeInteger(parsedBookId) || parsedBookId <= 0) {
-      setError('知识库 ID 必须是正整数。');
-      return;
+      return setError('知识库 ID 必须是正整数。');
     }
-    if (!openApiToken) {
-      setError('请填写语雀 OpenAPI Token。');
-      return;
+    if (quota && quota.remaining <= 0) {
+      return setError(`当前小时上传额度已用完，请在 ${formatResetTime(quota.reset_at)} 后继续。`);
     }
 
     setError('');
     setResult(null);
-    localStorage.setItem('quepic-account', account);
     localStorage.setItem('quepic-book-id', String(parsedBookId));
 
     try {
-      const credential = await getCredentialStatus(account);
-      if (!credential.configured) {
-        throw new Error(`账号“${account}”尚未保存语雀登录会话，请先在 QuePic 设置中完成登录。`);
-      }
-
       const uploaded: Array<{ file: File; url: string }> = [];
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
@@ -169,8 +176,9 @@ export function BatchDocumentUploader() {
           total: files.length,
           fileName: pathInsideFolder(file),
         });
-        const upload = await uploadImage(file, account, null, null);
+        const upload = await uploadImage(file, accountName, null, null, folderName);
         uploaded.push({ file, url: upload.asset.remote_url });
+        setQuota(await getUploadQuotaStatus(accountName));
       }
 
       const markdown = uploaded
@@ -184,12 +192,13 @@ export function BatchDocumentUploader() {
         fileName: folderName,
       });
       const document = await createYuqueDocument({
-        token: openApiToken,
+        account_name: accountName,
         book_id: parsedBookId,
         title: folderName,
         body: markdown,
       });
       setResult(document);
+      onUploaded?.();
     } catch (operationError) {
       setError(normalizeError(operationError));
     } finally {
@@ -198,7 +207,7 @@ export function BatchDocumentUploader() {
   };
 
   return (
-    <>
+    <div className="batch-doc-page">
       <input
         ref={inputRef}
         className="batch-doc-hidden-input"
@@ -207,147 +216,113 @@ export function BatchDocumentUploader() {
         multiple
         onChange={handleFolderChange}
       />
-      <button
-        className="batch-doc-launcher"
-        type="button"
-        title="将本地文件夹上传为语雀文档"
-        onClick={() => setOpen(true)}
-      >
-        <FolderUp size={19} />
-        <span>文件夹转文档</span>
-      </button>
 
-      {open && (
-        <div className="batch-doc-backdrop" role="presentation">
-          <section className="batch-doc-dialog" role="dialog" aria-modal="true" aria-labelledby="batch-doc-title">
-            <header className="batch-doc-header">
-              <div>
-                <span className="batch-doc-icon"><BookOpen size={20} /></span>
-                <div>
-                  <h2 id="batch-doc-title">文件夹批量上传到语雀文档</h2>
-                  <p>文件夹名作为文档名，图片按自然文件名顺序依次写入。</p>
-                </div>
-              </div>
-              <button type="button" aria-label="关闭" disabled={running} onClick={() => setOpen(false)}>
-                <X size={19} />
-              </button>
-            </header>
-
-            <div className="batch-doc-body">
-              <div className="batch-doc-fields">
-                <label>
-                  <span>上传账号</span>
-                  <input
-                    value={accountName}
-                    disabled={running}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) => setAccountName(event.target.value)}
-                    placeholder="与设置页中的账号名称一致"
-                  />
-                </label>
-                <label>
-                  <span>知识库 ID</span>
-                  <input
-                    value={bookId}
-                    disabled={running}
-                    inputMode="numeric"
-                    onChange={(event: ChangeEvent<HTMLInputElement>) => setBookId(event.target.value)}
-                    placeholder="例如 123456"
-                  />
-                </label>
-                <label className="batch-doc-token-field">
-                  <span>OpenAPI Token</span>
-                  <input
-                    value={token}
-                    disabled={running}
-                    type="password"
-                    autoComplete="off"
-                    onChange={(event: ChangeEvent<HTMLInputElement>) => setToken(event.target.value)}
-                    placeholder="仅用于本次创建文档，不会保存到本地"
-                  />
-                </label>
-              </div>
-
-              <div className="batch-doc-folder-card">
-                <div className="batch-doc-folder-summary">
-                  <div>
-                    <FolderUp size={22} />
-                    <div>
-                      <strong>{folderName || '尚未选择文件夹'}</strong>
-                      <small>{files.length > 0 ? `${files.length} 张图片` : '选择后将显示排序结果'}</small>
-                    </div>
-                  </div>
-                  <div className="batch-doc-folder-actions">
-                    {files.length > 0 && (
-                      <button type="button" disabled={running} onClick={resetSelection}>清空</button>
-                    )}
-                    <button type="button" disabled={running} onClick={selectFolder}>
-                      {files.length > 0 ? '重新选择' : '选择文件夹'}
-                    </button>
-                  </div>
-                </div>
-
-                {orderedNames.length > 0 && (
-                  <ol className="batch-doc-file-list">
-                    {orderedNames.map((name, index) => (
-                      <li key={`${name}-${index}`}>
-                        <span>{index + 1}</span>
-                        <FileImage size={15} />
-                        <b title={name}>{name}</b>
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              <p className="batch-doc-note">
-                图片上传复用 QuePic 已保存的语雀登录会话；Token 只用于 OpenAPI 创建 Markdown 文档。
-                文档创建后不会自动加入知识库目录。
-              </p>
-
-              {running && (
-                <div className="batch-doc-progress" aria-live="polite">
-                  <LoaderCircle className="spin" size={18} />
-                  <div>
-                    <strong>{progress.stage === 'uploading' ? `正在上传 ${progress.current}/${progress.total}` : '正在创建语雀文档'}</strong>
-                    <small>{progress.fileName}</small>
-                  </div>
-                </div>
-              )}
-
-              {error && (
-                <div className="batch-doc-message batch-doc-message-error" role="alert">
-                  <AlertTriangle size={18} />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              {result && (
-                <div className="batch-doc-message batch-doc-message-success">
-                  <CheckCircle2 size={18} />
-                  <div>
-                    <strong>文档“{result.title}”已创建</strong>
-                    <small>共写入 {files.length} 张图片，顺序与上方列表一致。</small>
-                    {result.url && <a href={result.url} target="_blank" rel="noreferrer">打开语雀文档</a>}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <footer className="batch-doc-footer">
-              <button type="button" disabled={running} onClick={() => setOpen(false)}>取消</button>
-              <button
-                className="batch-doc-primary"
-                type="button"
-                disabled={running || files.length === 0}
-                onClick={() => void startUpload()}
-              >
-                {running ? <LoaderCircle className="spin" size={17} /> : <FolderUp size={17} />}
-                上传并创建文档
-              </button>
-            </footer>
-          </section>
+      <div className="panel batch-doc-panel">
+        <div className="panel-heading">
+          <div>
+            <span>FOLDER TO YUQUE</span>
+            <h2>文件夹转语雀文档</h2>
+            <p>文件夹名作为文档名，图片按完整相对路径自然排序并依次写入。</p>
+          </div>
+          <BookOpen size={22} />
         </div>
-      )}
-    </>
+
+        <div className="batch-doc-status-grid">
+          <div className={credentialReady ? 'status-card ready' : 'status-card'}>
+            <strong>语雀登录</strong><small>{credentialReady ? '已就绪' : '未配置'}</small>
+          </div>
+          <div className={tokenReady ? 'status-card ready' : 'status-card'}>
+            <strong>OpenAPI Token</strong><small>{tokenReady ? '已安全保存' : '前往设置保存'}</small>
+          </div>
+          <div className="status-card">
+            <strong>小时额度</strong>
+            <small>{quota ? `${quota.remaining}/${quota.limit} 可用` : '正在读取'}</small>
+          </div>
+        </div>
+
+        <label className="field batch-doc-book-field">
+          <span>目标知识库 ID</span>
+          <input
+            value={bookId}
+            disabled={running}
+            inputMode="numeric"
+            onChange={(event: React.ChangeEvent<HTMLInputElement>) => setBookId(event.target.value)}
+            placeholder="例如 123456"
+          />
+          <small>OpenAPI Token 与当前账号绑定保存；知识库 ID 仅保存在本机应用设置中。</small>
+        </label>
+
+        <div className="batch-doc-folder-card">
+          <div className="batch-doc-folder-summary">
+            <div>
+              <FolderUp size={22} />
+              <div>
+                <strong>{folderName || '尚未选择文件夹'}</strong>
+                <small>{files.length > 0 ? `${files.length} 张图片 · 自动分类为“${folderName}”` : '选择后显示排序结果'}</small>
+              </div>
+            </div>
+            <div className="batch-doc-folder-actions">
+              {files.length > 0 && <button type="button" disabled={running} onClick={resetSelection}>清空</button>}
+              <button type="button" disabled={running} onClick={selectFolder}>
+                {files.length > 0 ? '重新选择' : '选择文件夹'}
+              </button>
+            </div>
+          </div>
+
+          {orderedNames.length > 0 && (
+            <ol className="batch-doc-file-list">
+              {orderedNames.map((name, index) => (
+                <li key={`${name}-${index}`}>
+                  <span>{index + 1}</span><FileImage size={15} /><b title={name}>{name}</b>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+
+        <div className="quota-note">
+          <Gauge size={18} />
+          <div>
+            <strong>安全限速已启用</strong>
+            <small>远程上传最多按 140 次/小时计算，并至少间隔 25 秒；重复图片复用历史链接，不消耗上传额度。</small>
+          </div>
+        </div>
+
+        {running && (
+          <div className="batch-doc-progress" aria-live="polite">
+            <LoaderCircle className="spin" size={18} />
+            <div>
+              <strong>{progress.stage === 'uploading' ? `正在处理 ${progress.current}/${progress.total}` : '正在创建语雀文档'}</strong>
+              <small>{progress.fileName}</small>
+            </div>
+          </div>
+        )}
+
+        {error && <div className="batch-doc-message batch-doc-message-error" role="alert"><AlertTriangle size={18} /><span>{error}</span></div>}
+        {result && (
+          <div className="batch-doc-message batch-doc-message-success">
+            <CheckCircle2 size={18} />
+            <div>
+              <strong>文档“{result.title}”已创建</strong>
+              <small>共写入 {files.length} 张图片，图片已归类到“{folderName}”。</small>
+              {result.url && <a href={result.url} target="_blank" rel="noreferrer">打开语雀文档</a>}
+            </div>
+          </div>
+        )}
+
+        <div className="batch-doc-footer">
+          <button
+            className="button primary"
+            type="button"
+            disabled={running || files.length === 0 || !credentialReady || !tokenReady}
+            onClick={() => void startUpload()}
+          >
+            {running ? <LoaderCircle className="spin" size={17} /> : <FolderUp size={17} />}
+            上传并创建文档
+          </button>
+          <small>新建文档不会自动加入语雀知识库目录。</small>
+        </div>
+      </div>
+    </div>
   );
 }
