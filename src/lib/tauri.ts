@@ -2,10 +2,46 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AssetRecord,
   CacheStats,
+  CreateYuqueDocumentInput,
   CredentialStatus,
   PreviewResult,
   UploadResult,
+  YuqueDocumentResult,
 } from '../types';
+
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/bmp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  'image/tiff',
+  'image/avif',
+]);
+
+function resolveImageMimeType(file: File): string {
+  const declaredType = file.type.trim().toLowerCase();
+  if (SUPPORTED_IMAGE_MIME_TYPES.has(declaredType)) return declaredType;
+
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    gif: 'image/gif',
+    ico: 'image/x-icon',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    tif: 'image/tiff',
+    tiff: 'image/tiff',
+    webp: 'image/webp',
+  };
+  return extension ? mimeTypes[extension] || 'application/octet-stream' : 'application/octet-stream';
+}
 
 export async function listAssets(): Promise<AssetRecord[]> {
   return invoke<AssetRecord[]>('list_assets');
@@ -67,11 +103,17 @@ export async function uploadImage(
   return invoke<UploadResult>('upload_image', {
     input: {
       file_name: file.name,
-      mime_type: file.type || 'application/octet-stream',
+      mime_type: resolveImageMimeType(file),
       bytes,
       width,
       height,
       account_name: accountName,
     },
   });
+}
+
+export async function createYuqueDocument(
+  input: CreateYuqueDocumentInput,
+): Promise<YuqueDocumentResult> {
+  return invoke<YuqueDocumentResult>('create_yuque_document', { input });
 }

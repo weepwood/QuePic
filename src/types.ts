@@ -57,3 +57,17 @@ export interface CacheStats {
   cached_count: number;
   cache_bytes: number;
 }
+
+export interface CreateYuqueDocumentInput {
+  token: string;
+  book_id: number;
+  title: string;
+  body: string;
+}
+
+export interface YuqueDocumentResult {
+  id: number;
+  title: string;
+  slug: string;
+  url: string | null;
+}
