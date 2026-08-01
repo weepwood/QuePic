@@ -126,14 +126,15 @@ fn build_document_url(book: Option<&YuqueBook>, slug: &str) -> Option<String> {
 
 fn extract_error_message(body: &str) -> Option<String> {
     let value: Value = serde_json::from_str(body).ok()?;
-    [
+    let message = [
         value.get("message"),
         value.get("error"),
         value.get("data").and_then(|data| data.get("message")),
     ]
     .into_iter()
     .flatten()
-    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned))
+    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned));
+    message
 }
 
 #[cfg(test)]
