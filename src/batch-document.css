@@ -2,172 +2,65 @@
   display: none;
 }
 
-.batch-doc-launcher {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 80;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 0 16px;
-  border: 1px solid rgba(82, 110, 94, 0.22);
-  border-radius: 999px;
-  background: rgba(250, 252, 250, 0.96);
-  box-shadow: 0 12px 32px rgba(30, 45, 36, 0.16);
-  color: #1f4d36;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-  backdrop-filter: blur(14px);
+.batch-doc-page {
+  width: 100%;
 }
 
-.batch-doc-launcher:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 15px 36px rgba(30, 45, 36, 0.2);
+.batch-doc-panel {
+  max-width: 980px;
+  margin: 0 auto;
 }
 
-.batch-doc-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
+.batch-doc-panel > .panel-heading {
+  align-items: flex-start;
+}
+
+.batch-doc-status-grid {
   display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(17, 24, 20, 0.48);
-  backdrop-filter: blur(8px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
 }
 
-.batch-doc-dialog {
-  width: min(820px, 100%);
-  max-height: min(820px, calc(100vh - 48px));
+.status-card {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border: 1px solid rgba(65, 86, 74, 0.18);
-  border-radius: 22px;
-  background: #fbfcfb;
-  box-shadow: 0 28px 80px rgba(17, 28, 21, 0.28);
-  color: #21352a;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
 }
 
-.batch-doc-header,
-.batch-doc-footer {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 22px;
-  border-color: rgba(64, 86, 73, 0.12);
-}
-
-.batch-doc-header {
-  border-bottom: 1px solid rgba(64, 86, 73, 0.12);
-}
-
-.batch-doc-header > div {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.batch-doc-icon {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border-radius: 13px;
-  background: #e8f2eb;
-  color: #23623f;
-}
-
-.batch-doc-header h2,
-.batch-doc-header p {
-  margin: 0;
-}
-
-.batch-doc-header h2 {
-  font-size: 18px;
-}
-
-.batch-doc-header p {
-  margin-top: 3px;
-  color: #708078;
+.status-card strong {
+  color: #595959;
   font-size: 13px;
 }
 
-.batch-doc-header button,
-.batch-doc-footer button,
-.batch-doc-folder-actions button {
-  border: 1px solid rgba(65, 86, 74, 0.17);
-  border-radius: 10px;
-  background: #fff;
-  color: #31483c;
-  font: inherit;
-  cursor: pointer;
+.status-card small {
+  color: #8c8c8c;
 }
 
-.batch-doc-header button {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  padding: 0;
+.status-card.ready {
+  border-color: #b7eb8f;
+  background: #f6ffed;
 }
 
-.batch-doc-body {
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: 22px;
+.status-card.ready strong,
+.status-card.ready small {
+  color: #168f4d;
 }
 
-.batch-doc-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
-}
-
-.batch-doc-token-field {
-  grid-column: 1 / -1;
-}
-
-.batch-doc-fields label {
-  display: grid;
-  gap: 7px;
-}
-
-.batch-doc-fields label > span {
-  color: #53665c;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.batch-doc-fields input {
-  width: 100%;
-  min-height: 42px;
-  box-sizing: border-box;
-  border: 1px solid rgba(65, 86, 74, 0.2);
-  border-radius: 10px;
-  background: #fff;
-  padding: 0 12px;
-  color: #21352a;
-  font: inherit;
-  outline: none;
-}
-
-.batch-doc-fields input:focus {
-  border-color: #4c8665;
-  box-shadow: 0 0 0 3px rgba(76, 134, 101, 0.12);
+.batch-doc-book-field {
+  max-width: 520px;
 }
 
 .batch-doc-folder-card {
-  margin-top: 18px;
+  margin-top: 20px;
   overflow: hidden;
-  border: 1px solid rgba(65, 86, 74, 0.16);
-  border-radius: 15px;
-  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .batch-doc-folder-summary {
@@ -175,32 +68,34 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 16px;
+  padding: 16px;
+  background: #fafafa;
 }
 
 .batch-doc-folder-summary > div:first-child {
-  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 11px;
-  color: #2f6548;
+  gap: 12px;
+  min-width: 0;
+  color: #25b864;
 }
 
-.batch-doc-folder-summary strong,
-.batch-doc-folder-summary small {
-  display: block;
+.batch-doc-folder-summary > div:first-child > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .batch-doc-folder-summary strong {
   overflow: hidden;
-  color: #263b30;
+  color: #262626;
+  font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .batch-doc-folder-summary small {
-  margin-top: 2px;
-  color: #7a8a82;
+  color: #8c8c8c;
 }
 
 .batch-doc-folder-actions {
@@ -209,157 +104,128 @@
 }
 
 .batch-doc-folder-actions button {
-  min-height: 34px;
-  padding: 0 11px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  color: #595959;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.batch-doc-folder-actions button:hover:not(:disabled) {
+  border-color: #25b864;
+  color: #25b864;
 }
 
 .batch-doc-file-list {
-  max-height: 250px;
-  overflow: auto;
+  max-height: 360px;
   margin: 0;
   padding: 0;
-  border-top: 1px solid rgba(65, 86, 74, 0.1);
+  overflow: auto;
   list-style: none;
 }
 
 .batch-doc-file-list li {
   display: grid;
-  grid-template-columns: 30px 18px minmax(0, 1fr);
+  grid-template-columns: 32px 18px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  min-height: 38px;
-  padding: 0 14px;
-  border-bottom: 1px solid rgba(65, 86, 74, 0.07);
-  color: #607269;
+  min-height: 42px;
+  padding: 0 16px;
+  border-top: 1px solid #f0f0f0;
+  color: #8c8c8c;
 }
 
-.batch-doc-file-list li:last-child {
-  border-bottom: 0;
-}
-
-.batch-doc-file-list li > span {
-  font-variant-numeric: tabular-nums;
-  text-align: right;
+.batch-doc-file-list li:hover {
+  background: #fafafa;
 }
 
 .batch-doc-file-list b {
   overflow: hidden;
-  color: #354a3f;
+  color: #595959;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.batch-doc-note {
-  margin: 14px 2px 0;
-  color: #74847c;
-  font-size: 12px;
-  line-height: 1.65;
-}
-
+.quota-note,
 .batch-doc-progress,
 .batch-doc-message {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin-top: 14px;
+  margin-top: 16px;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: 6px;
+}
+
+.quota-note {
+  border: 1px solid #91caff;
+  color: #0958d9;
+  background: #e6f4ff;
+}
+
+.quota-note > div,
+.batch-doc-progress > div,
+.batch-doc-message > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quota-note small,
+.batch-doc-progress small,
+.batch-doc-message small {
+  color: inherit;
+  opacity: 0.78;
 }
 
 .batch-doc-progress {
-  background: #eef4f0;
-  color: #2d5c43;
-}
-
-.batch-doc-progress strong,
-.batch-doc-progress small,
-.batch-doc-message strong,
-.batch-doc-message small {
-  display: block;
-}
-
-.batch-doc-progress small,
-.batch-doc-message small {
-  margin-top: 3px;
-  color: inherit;
-  opacity: 0.75;
+  border: 1px solid #b7eb8f;
+  color: #389e0d;
+  background: #f6ffed;
 }
 
 .batch-doc-message-error {
-  background: #fff1ef;
-  color: #9b3f35;
+  border: 1px solid #ffccc7;
+  color: #cf1322;
+  background: #fff2f0;
 }
 
 .batch-doc-message-success {
-  background: #eaf6ee;
-  color: #286041;
+  border: 1px solid #b7eb8f;
+  color: #168f4d;
+  background: #f6ffed;
 }
 
 .batch-doc-message-success a {
-  display: inline-block;
-  margin-top: 6px;
-  color: #1b7145;
-  font-weight: 700;
+  color: #168f4d;
+  font-weight: 600;
 }
 
 .batch-doc-footer {
-  justify-content: flex-end;
-  border-top: 1px solid rgba(64, 86, 73, 0.12);
-}
-
-.batch-doc-footer button {
-  min-height: 40px;
-  padding: 0 15px;
-}
-
-.batch-doc-footer .batch-doc-primary {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  border-color: #296846;
-  background: #296846;
-  color: #fff;
-  font-weight: 700;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #f0f0f0;
 }
 
-.batch-doc-dialog button:disabled,
-.batch-doc-dialog input:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
+.batch-doc-footer small {
+  color: #8c8c8c;
 }
 
-@media (max-width: 680px) {
-  .batch-doc-backdrop {
-    padding: 10px;
-  }
-
-  .batch-doc-dialog {
-    max-height: calc(100vh - 20px);
-    border-radius: 16px;
-  }
-
-  .batch-doc-fields {
+@media (max-width: 760px) {
+  .batch-doc-status-grid {
     grid-template-columns: 1fr;
   }
 
-  .batch-doc-token-field {
-    grid-column: auto;
-  }
-
-  .batch-doc-folder-summary {
-    align-items: flex-start;
+  .batch-doc-folder-summary,
+  .batch-doc-footer {
+    align-items: stretch;
     flex-direction: column;
-  }
-
-  .batch-doc-launcher span {
-    display: none;
-  }
-
-  .batch-doc-launcher {
-    width: 46px;
-    padding: 0;
-    justify-content: center;
   }
 }
