@@ -5,27 +5,14 @@ import type {
   CreateYuqueDocumentInput,
   CredentialStatus,
   PreviewResult,
+  SecretStatus,
+  UploadQuotaStatus,
   UploadResult,
   YuqueDocumentResult,
 } from '../types';
 
-const SUPPORTED_IMAGE_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/svg+xml',
-  'image/bmp',
-  'image/x-icon',
-  'image/vnd.microsoft.icon',
-  'image/tiff',
-  'image/avif',
-]);
-
 function resolveImageMimeType(file: File): string {
-  const declaredType = file.type.trim().toLowerCase();
-  if (SUPPORTED_IMAGE_MIME_TYPES.has(declaredType)) return declaredType;
-
+  if (file.type.startsWith('image/')) return file.type;
   const extension = file.name.split('.').pop()?.toLowerCase();
   const mimeTypes: Record<string, string> = {
     avif: 'image/avif',
@@ -51,6 +38,10 @@ export async function deleteAsset(id: number): Promise<void> {
   return invoke('delete_asset', { id });
 }
 
+export async function updateAssetCategory(id: number, category: string): Promise<AssetRecord> {
+  return invoke<AssetRecord>('update_asset_category', { id, category });
+}
+
 export async function saveCookie(accountName: string, cookie: string): Promise<CredentialStatus> {
   return invoke<CredentialStatus>('save_cookie', { accountName, cookie });
 }
@@ -69,6 +60,18 @@ export async function clearCookie(accountName: string): Promise<void> {
 
 export async function getCredentialStatus(accountName: string): Promise<CredentialStatus> {
   return invoke<CredentialStatus>('credential_status', { accountName });
+}
+
+export async function saveOpenApiToken(accountName: string, token: string): Promise<SecretStatus> {
+  return invoke<SecretStatus>('save_openapi_token', { accountName, token });
+}
+
+export async function clearOpenApiToken(accountName: string): Promise<void> {
+  return invoke('clear_openapi_token', { accountName });
+}
+
+export async function getOpenApiTokenStatus(accountName: string): Promise<SecretStatus> {
+  return invoke<SecretStatus>('openapi_token_status', { accountName });
 }
 
 export async function ensurePreview(
@@ -93,11 +96,16 @@ export async function clearPreviewCache(): Promise<CacheStats> {
   return invoke<CacheStats>('clear_preview_cache');
 }
 
+export async function getUploadQuotaStatus(accountName: string): Promise<UploadQuotaStatus> {
+  return invoke<UploadQuotaStatus>('upload_quota_status', { accountName });
+}
+
 export async function uploadImage(
   file: File,
   accountName: string,
   width: number | null,
   height: number | null,
+  category: string,
 ): Promise<UploadResult> {
   const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
   return invoke<UploadResult>('upload_image', {
@@ -108,6 +116,7 @@ export async function uploadImage(
       width,
       height,
       account_name: accountName,
+      category,
     },
   });
 }
