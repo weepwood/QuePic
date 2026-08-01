@@ -9,6 +9,8 @@ QuePic 是一个使用 **React + Tauri 2 + Rust + SQLite** 构建的本地优先
 - React 19 + TypeScript 桌面界面；
 - 图片拖放、文件选择和剪贴板导入；
 - 批量上传队列与失败重试；
+- 选择本地文件夹，按图片文件名自然顺序批量上传并创建同名语雀文档；
+- 使用语雀 OpenAPI Token 创建 Markdown 文档，Token 不写入本地存储；
 - 应用内登录语雀并捕获包含 HttpOnly 的会话 Cookie；
 - Cookie 分片写入 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；
 - 通过 `POST https://www.yuque.com/api/upload/attach` 上传图片；
@@ -102,6 +104,27 @@ Windows Credential Manager 的单条密码存在长度限制。QuePic v0.1.1 起
 
 设置页仍保留“高级：手动粘贴 Cookie”作为回退方式，手动保存同样使用分片存储。
 
+## 文件夹批量创建语雀文档
+
+1. 先按照上面的步骤保存语雀登录会话，用于上传图片附件。
+2. 点击应用右下角的“文件夹转文档”。
+3. 填写与设置页一致的上传账号、目标知识库 ID 和语雀 OpenAPI Token。
+4. 选择本地文件夹，确认界面显示的图片排序结果。
+5. 点击“上传并创建文档”。
+
+处理规则：
+
+- 文档标题使用所选顶层文件夹的名称；
+- 递归读取文件夹中的常见图片格式；
+- 按完整相对路径进行中文自然排序，例如 `1.png、2.png、10.png`；
+- 图片严格串行上传，Markdown 正文顺序与排序预览一致；
+- 单张图片不能超过 50 MB；
+- OpenAPI Token 仅保存在当前界面内存中，不写入 `localStorage`、SQLite 或系统密钥库；
+- 已上传图片由现有 SHA-256 去重逻辑复用，失败后可直接重试；
+- 语雀 OpenAPI 创建的文档不会自动加入知识库目录，需要在语雀中手动加入，或后续调用目录更新接口。
+
+图片上传仍依赖语雀网页会话，因为当前 OpenAPI 文档没有提供附件上传端点；OpenAPI Token 仅用于调用 `POST /api/v2/repos/{book_id}/docs` 创建 Markdown 文档。
+
 ## 缓存与删除边界
 
 QuePic 管理的是本地索引和本地预览缓存，并不是语雀官方附件管理器：
@@ -118,20 +141,23 @@ QuePic 管理的是本地索引和本地预览缓存，并不是语雀官方附�
 
 ```text
 src/
-├─ App.tsx                         页面、登录、上传、缓存设置与图片库
-├─ components/AssetPreview.tsx    懒加载、本地文件与代理预览
-├─ lib/tauri.ts                    前端 IPC 封装
-├─ types.ts                        前端数据类型
-├─ styles.css                      主界面样式
-└─ preview.css                     预览与缓存设置样式
+├─ App.tsx                                  页面、登录、上传、缓存设置与图片库
+├─ components/AssetPreview.tsx             懒加载、本地文件与代理预览
+├─ components/BatchDocumentUploader.tsx    文件夹选择、排序、上传与文档创建
+├─ lib/tauri.ts                             前端 IPC 封装
+├─ types.ts                                 前端数据类型
+├─ styles.css                               主界面样式
+├─ preview.css                              预览与缓存设置样式
+└─ batch-document.css                       文件夹转文档界面样式
 
 src-tauri/src/
-├─ credentials.rs                  系统密钥库分片存储
-├─ database.rs                     assets / asset_previews 数据访问
-├─ models.rs                       IPC 与缓存数据结构
-├─ preview.rs                      原图缓存、缩略图和缓存清理
-├─ yuque.rs                        上传、受控回源和代理 URL 转换
-└─ lib.rs                          登录窗口、Tauri 命令与业务编排
+├─ credentials.rs                           系统密钥库分片存储
+├─ database.rs                              assets / asset_previews 数据访问
+├─ models.rs                                IPC 与缓存数据结构
+├─ preview.rs                               原图缓存、缩略图和缓存清理
+├─ yuque.rs                                 上传、受控回源和代理 URL 转换
+├─ yuque_openapi.rs                         OpenAPI 文档创建与错误处理
+└─ lib.rs                                   登录窗口、Tauri 命令与业务编排
 ```
 
 详细设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，安全边界见 [`docs/SECURITY.md`](docs/SECURITY.md)。
