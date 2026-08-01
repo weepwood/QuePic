@@ -1,6 +1,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { ImageOff, LoaderCircle } from 'lucide-react';
+import { ImageOff, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type React from 'react';
 
 import { ensurePreview } from '../lib/tauri';
 import type { AssetRecord } from '../types';
@@ -25,11 +26,12 @@ export function AssetPreview({
   onCacheChanged,
 }: AssetPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const retryRef = useRef(false);
+  const requestIdRef = useRef(0);
   const [visible, setVisible] = useState(preferOriginal);
   const [state, setState] = useState<LoadState>('idle');
   const [src, setSrc] = useState<string | null>(null);
   const [source, setSource] = useState<string>(asset.preview_source || 'missing');
+  const [retryNonce, setRetryNonce] = useState(0);
 
   const storedPath = useMemo(() => {
     if (preferOriginal) return asset.original_path || asset.thumbnail_path;
@@ -53,90 +55,98 @@ export function AssetPreview({
           observer.disconnect();
         }
       },
-      { rootMargin: '260px' },
+      { rootMargin: '100px' },
     );
     observer.observe(element);
     return () => observer.disconnect();
   }, [preferOriginal]);
 
   useEffect(() => {
-    retryRef.current = false;
+    requestIdRef.current += 1;
     setSrc(null);
     setState('idle');
     setSource(asset.preview_source || 'missing');
   }, [asset.id, asset.preview_source, cacheEpoch, preferOriginal]);
 
   useEffect(() => {
-    if (!visible || state !== 'idle') return;
-    let cancelled = false;
+    if (!visible) return undefined;
+    const requestId = ++requestIdRef.current;
+    let disposed = false;
+
+    const commit = (callback: () => void) => {
+      if (!disposed && requestId === requestIdRef.current) callback();
+    };
 
     const load = async () => {
       if (storedPath) {
-        setSrc(convertFileSrc(storedPath));
-        setSource('local');
-        setState('ready');
+        commit(() => {
+          setSrc(convertFileSrc(storedPath));
+          setSource('local');
+          setState('ready');
+        });
         return;
       }
 
-      setState('loading');
+      commit(() => setState('loading'));
       try {
         const preview = await ensurePreview(
           asset.id,
           preferOriginal,
           allowWordpressFallback,
+          retryNonce > 0,
         );
-        if (cancelled) return;
-        if (preview.local_path) setSrc(convertFileSrc(preview.local_path));
-        else setSrc(preview.proxy_url);
-        setSource(preview.source);
-        setState(preview.local_path || preview.proxy_url ? 'ready' : 'failed');
-        if (preview.cached) onCacheChanged?.();
+        commit(() => {
+          setSrc(preview.local_path ? convertFileSrc(preview.local_path) : preview.proxy_url);
+          setSource(preview.source);
+          setState(preview.local_path || preview.proxy_url ? 'ready' : 'failed');
+          if (preview.cached) onCacheChanged?.();
+        });
       } catch {
-        if (!cancelled) setState('failed');
+        commit(() => {
+          setSrc(null);
+          setState('failed');
+        });
       }
     };
 
     void load();
     return () => {
-      cancelled = true;
+      disposed = true;
     };
-  }, [allowWordpressFallback, asset.id, onCacheChanged, preferOriginal, state, storedPath, visible]);
+  }, [allowWordpressFallback, asset.id, onCacheChanged, preferOriginal, retryNonce, storedPath, visible]);
 
-  const retryAfterImageError = async () => {
-    if (retryRef.current) {
-      setState('failed');
-      setSrc(null);
-      return;
-    }
-    retryRef.current = true;
-    setState('loading');
-    try {
-      const preview = await ensurePreview(
-        asset.id,
-        preferOriginal,
-        allowWordpressFallback,
-        true,
-      );
-      if (preview.local_path) setSrc(convertFileSrc(preview.local_path));
-      else setSrc(preview.proxy_url);
-      setSource(preview.source);
-      setState(preview.local_path || preview.proxy_url ? 'ready' : 'failed');
-      if (preview.cached) onCacheChanged?.();
-    } catch {
-      setSrc(null);
-      setState('failed');
-    }
+  const retryAfterImageError = () => {
+    setSrc(null);
+    setState('idle');
+    setRetryNonce((value) => value + 1);
   };
 
   return (
     <div ref={containerRef} className={`asset-preview ${className}`.trim()}>
-      {src && <img src={src} alt={asset.file_name} onError={() => void retryAfterImageError()} />}
+      {src && <img src={src} alt={asset.file_name} onError={retryAfterImageError} />}
       {!src && state === 'loading' && <LoaderCircle className="spin preview-state-icon" size={24} />}
-      {!src && state === 'failed' && <ImageOff className="preview-state-icon" size={24} />}
+      {!src && state === 'failed' && (
+        <button className="preview-retry" type="button" onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+          event.stopPropagation();
+          retryAfterImageError();
+        }}>
+          <ImageOff size={22} />
+          <span>加载失败</span>
+          <RefreshCw size={14} />
+        </button>
+      )}
       {!src && state === 'idle' && <span className="preview-skeleton" />}
       {state === 'ready' && (
         <span className={`preview-source source-${source}`}>
-          {source === 'local' ? '本地缓存' : source === 'wordpress_proxy' ? '兼容代理' : source}
+          {source === 'local'
+            ? '本地缓存'
+            : source === 'remote_url'
+              ? '远程缩略图'
+              : source === 'yuque_session'
+                ? '语雀回源'
+                : source === 'wordpress_proxy'
+                  ? '兼容代理'
+                  : source}
         </span>
       )}
     </div>
