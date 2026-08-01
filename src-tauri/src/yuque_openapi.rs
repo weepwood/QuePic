@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::header::ACCEPT;
+use reqwest::{header::ACCEPT, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -65,6 +65,7 @@ pub async fn create_yuque_document(
 
     let endpoint = format!("{YUQUE_API_BASE}/repos/{}/docs", input.book_id);
     let client = reqwest::Client::builder()
+        .redirect(Policy::none())
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|error| format!("无法初始化语雀 OpenAPI 客户端：{error}"))?;
