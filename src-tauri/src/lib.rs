@@ -3,6 +3,7 @@ mod database;
 mod models;
 mod preview;
 mod yuque;
+mod yuque_openapi;
 
 use std::{
     fs,
@@ -477,6 +478,7 @@ pub fn run() {
             delete_asset,
             ensure_preview,
             upload_image,
+            yuque_openapi::create_yuque_document,
         ])
         .run(tauri::generate_context!())
         .expect("QuePic 启动失败");
