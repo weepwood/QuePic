@@ -166,6 +166,7 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{account_names, import_account_names, initialize};
+    use crate::database;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -175,6 +176,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("quepic-accounts-{unique}.sqlite"));
+        database::initialize(&path).unwrap();
         initialize(&path).unwrap();
         import_account_names(&path, &["工作".into(), "个人".into()]).unwrap();
         let names = account_names(&path).unwrap();
