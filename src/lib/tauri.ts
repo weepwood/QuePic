@@ -9,8 +9,23 @@ import type {
   YuqueDocumentResult,
 } from '../types';
 
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/bmp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  'image/tiff',
+  'image/avif',
+]);
+
 function resolveImageMimeType(file: File): string {
-  if (file.type) return file.type;
+  const declaredType = file.type.trim().toLowerCase();
+  if (SUPPORTED_IMAGE_MIME_TYPES.has(declaredType)) return declaredType;
+
   const extension = file.name.split('.').pop()?.toLowerCase();
   const mimeTypes: Record<string, string> = {
     avif: 'image/avif',
