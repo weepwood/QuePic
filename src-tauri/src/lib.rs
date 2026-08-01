@@ -1,3 +1,5 @@
+mod accounts;
+mod backup;
 mod credentials;
 mod database;
 mod models;
@@ -250,7 +252,7 @@ async fn ensure_preview(
             let preview = cache_and_record_task(
                 cache_lock,
                 preview_cache_dir,
-                database_path,
+                database_path.clone(),
                 asset_id,
                 asset.sha256,
                 downloaded.mime_type,
@@ -500,11 +502,13 @@ fn sanitize_file_name(value: &str) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("quepic.db");
             database::initialize(&database_path).map_err(std::io::Error::other)?;
+            accounts::initialize(&database_path).map_err(std::io::Error::other)?;
 
             let preview_cache_dir = app.path().app_cache_dir()?.join("previews");
             fs::create_dir_all(&preview_cache_dir)?;
@@ -526,6 +530,10 @@ pub fn run() {
             openapi_token::save_openapi_token,
             openapi_token::openapi_token_status,
             openapi_token::clear_openapi_token,
+            accounts::list_account_profiles,
+            accounts::save_account_profile,
+            backup::export_backup,
+            backup::import_backup,
             list_assets,
             update_asset_category,
             cache_stats,
