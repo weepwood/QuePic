@@ -4,11 +4,14 @@ use reqwest::{header::ACCEPT, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::openapi_token;
+
 const YUQUE_API_BASE: &str = "https://www.yuque.com/api/v2";
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateYuqueDocumentInput {
-    pub token: String,
+    pub account_name: String,
     pub book_id: i64,
     pub title: String,
     pub body: String,
@@ -44,10 +47,11 @@ struct YuqueBook {
 pub async fn create_yuque_document(
     input: CreateYuqueDocumentInput,
 ) -> Result<YuqueDocumentResult, String> {
-    let token = input.token.trim().to_string();
-    if token.is_empty() {
-        return Err("语雀 OpenAPI Token 不能为空。".into());
+    let account_name = input.account_name.trim();
+    if account_name.is_empty() || account_name.len() > 80 {
+        return Err("账号名称无效。".into());
     }
+    let token = openapi_token::load(account_name)?;
     if input.book_id <= 0 {
         return Err("知识库 ID 必须是正整数。".into());
     }
@@ -65,8 +69,9 @@ pub async fn create_yuque_document(
 
     let endpoint = format!("{YUQUE_API_BASE}/repos/{}/docs", input.book_id);
     let client = reqwest::Client::builder()
-        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(120))
+        .redirect(Policy::none())
         .build()
         .map_err(|error| format!("无法初始化语雀 OpenAPI 客户端：{error}"))?;
 
@@ -83,11 +88,21 @@ pub async fn create_yuque_document(
         .await
         .map_err(|error| format!("创建语雀文档请求失败：{error}"))?;
 
+    if response.status().is_redirection() {
+        return Err("语雀 OpenAPI 返回重定向，QuePic 已拒绝继续请求。".into());
+    }
+    if response.content_length().unwrap_or(0) as usize > MAX_RESPONSE_BYTES {
+        return Err("语雀 OpenAPI 响应体异常过大。".into());
+    }
+
     let status = response.status();
     let response_text = response
         .text()
         .await
         .map_err(|error| format!("读取语雀 OpenAPI 响应失败：{error}"))?;
+    if response_text.len() > MAX_RESPONSE_BYTES {
+        return Err("语雀 OpenAPI 响应体异常过大。".into());
+    }
 
     if !status.is_success() {
         let message = extract_error_message(&response_text)
@@ -143,9 +158,7 @@ mod tests {
 
     #[test]
     fn builds_document_url_from_namespace() {
-        let book = YuqueBook {
-            namespace: Some("team/book".into()),
-        };
+        let book = YuqueBook { namespace: Some("team/book".into()) };
         assert_eq!(
             build_document_url(Some(&book), "folder-images"),
             Some("https://www.yuque.com/team/book/folder-images".into())
