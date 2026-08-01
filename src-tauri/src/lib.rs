@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
-const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const YUQUE_LOGIN_WINDOW: &str = "yuque-login";
 const YUQUE_LOGIN_URL: &str = "https://www.yuque.com/login";
 const YUQUE_UPLOAD_URL: &str = "https://www.yuque.com/api/upload/attach";
@@ -410,7 +410,7 @@ fn validate_upload(input: &UploadInput) -> Result<(), String> {
         return Err("图片内容为空。".into());
     }
     if input.bytes.len() > MAX_IMAGE_BYTES {
-        return Err("图片超过 25 MB 限制。".into());
+        return Err("图片超过 50 MB 限制。".into());
     }
     if !ALLOWED_MIME_TYPES.contains(&input.mime_type.as_str()) {
         return Err(format!("不支持的图片格式：{}", input.mime_type));

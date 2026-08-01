@@ -6,9 +6,12 @@ use std::{
 };
 
 use chrono::Utc;
-use image::ImageFormat;
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat};
 
-const THUMBNAIL_EDGE: u32 = 512;
+const PREVIEW_EDGE: u32 = 1_600;
+const THUMBNAIL_EDGE: u32 = 320;
+const PREVIEW_JPEG_QUALITY: u8 = 80;
+const THUMBNAIL_JPEG_QUALITY: u8 = 72;
 
 #[derive(Debug, Clone)]
 pub struct CachedPreview {
@@ -32,25 +35,28 @@ pub fn cache_image(
     let asset_dir = asset_cache_dir(cache_root, sha256)?;
     fs::create_dir_all(&asset_dir).map_err(|error| format!("无法创建图片缓存目录：{error}"))?;
 
-    let original_path = asset_dir.join(format!("original.{}", extension_for_mime(mime_type)));
-    write_atomic(&original_path, bytes)?;
-
-    let thumbnail_path = match generate_thumbnail(bytes, &asset_dir.join("thumbnail.png")) {
-        Ok(path) => path,
-        Err(_) => original_path.clone(),
+    let (preview_path, thumbnail_path) = if should_preserve_source(mime_type) {
+        cache_preserved_source(&asset_dir, mime_type, bytes)?
+    } else {
+        match image::load_from_memory(bytes) {
+            Ok(image) => cache_compact_raster(&asset_dir, &image)?,
+            Err(_) => cache_preserved_source(&asset_dir, mime_type, bytes)?,
+        }
     };
 
-    let original_bytes = file_size(&original_path)?;
-    let thumbnail_bytes = if thumbnail_path == original_path {
+    cleanup_stale_files(&asset_dir, &[&preview_path, &thumbnail_path]);
+
+    let preview_bytes = file_size(&preview_path)?;
+    let thumbnail_bytes = if thumbnail_path == preview_path {
         0
     } else {
         file_size(&thumbnail_path)?
     };
 
     Ok(CachedPreview {
-        original_path: path_to_string(&original_path),
+        original_path: path_to_string(&preview_path),
         thumbnail_path: path_to_string(&thumbnail_path),
-        cache_bytes: original_bytes.saturating_add(thumbnail_bytes),
+        cache_bytes: preview_bytes.saturating_add(thumbnail_bytes),
         cached_at: Utc::now().to_rfc3339(),
     })
 }
@@ -84,15 +90,90 @@ pub fn clear_cache(cache_root: &Path) -> Result<(), String> {
     fs::create_dir_all(cache_root).map_err(|error| format!("无法重新创建图片缓存目录：{error}"))
 }
 
-fn generate_thumbnail(bytes: &[u8], target: &Path) -> Result<PathBuf, String> {
-    let image = image::load_from_memory(bytes).map_err(|error| format!("无法解析图片以生成缩略图：{error}"))?;
-    let thumbnail = image.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE);
-    let mut output = Cursor::new(Vec::new());
-    thumbnail
-        .write_to(&mut output, ImageFormat::Png)
-        .map_err(|error| format!("无法编码图片缩略图：{error}"))?;
-    write_atomic(target, output.get_ref())?;
-    Ok(target.to_path_buf())
+fn cache_compact_raster(asset_dir: &Path, image: &DynamicImage) -> Result<(PathBuf, PathBuf), String> {
+    let preview_path = encode_resized_image(
+        image,
+        PREVIEW_EDGE,
+        PREVIEW_JPEG_QUALITY,
+        asset_dir,
+        "preview",
+    )?;
+    let thumbnail_path = encode_resized_image(
+        image,
+        THUMBNAIL_EDGE,
+        THUMBNAIL_JPEG_QUALITY,
+        asset_dir,
+        "thumbnail",
+    )?;
+    Ok((preview_path, thumbnail_path))
+}
+
+fn cache_preserved_source(
+    asset_dir: &Path,
+    mime_type: &str,
+    bytes: &[u8],
+) -> Result<(PathBuf, PathBuf), String> {
+    let preview_path = asset_dir.join(format!("preview.{}", extension_for_mime(mime_type)));
+    write_atomic(&preview_path, bytes)?;
+
+    let thumbnail_path = image::load_from_memory(bytes)
+        .ok()
+        .and_then(|image| {
+            encode_resized_image(
+                &image,
+                THUMBNAIL_EDGE,
+                THUMBNAIL_JPEG_QUALITY,
+                asset_dir,
+                "thumbnail",
+            )
+            .ok()
+        })
+        .unwrap_or_else(|| preview_path.clone());
+
+    Ok((preview_path, thumbnail_path))
+}
+
+fn encode_resized_image(
+    image: &DynamicImage,
+    max_edge: u32,
+    jpeg_quality: u8,
+    asset_dir: &Path,
+    stem: &str,
+) -> Result<PathBuf, String> {
+    let resized = image.thumbnail(max_edge, max_edge);
+    let (extension, encoded) = if resized.color().has_alpha() {
+        let mut output = Cursor::new(Vec::new());
+        resized
+            .write_to(&mut output, ImageFormat::WebP)
+            .map_err(|error| format!("无法编码透明图片缓存：{error}"))?;
+        ("webp", output.into_inner())
+    } else {
+        let mut output = Vec::new();
+        JpegEncoder::new_with_quality(&mut output, jpeg_quality)
+            .encode_image(&resized)
+            .map_err(|error| format!("无法编码 JPEG 图片缓存：{error}"))?;
+        ("jpg", output)
+    };
+
+    let target = asset_dir.join(format!("{stem}.{extension}"));
+    write_atomic(&target, &encoded)?;
+    Ok(target)
+}
+
+fn should_preserve_source(mime_type: &str) -> bool {
+    matches!(mime_type, "image/gif" | "image/svg+xml" | "image/avif")
+}
+
+fn cleanup_stale_files(asset_dir: &Path, keep: &[&Path]) {
+    let Ok(entries) = fs::read_dir(asset_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && !keep.iter().any(|candidate| **candidate == path) {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -177,6 +258,19 @@ fn remove_empty_parent(asset_dir: &Path, cache_root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{GenericImageView, Rgb, RgbImage};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "quepic-preview-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
 
     #[test]
     fn rejects_unsafe_cache_keys() {
@@ -192,15 +286,45 @@ mod tests {
     }
 
     #[test]
+    fn compacts_large_opaque_images_into_two_smaller_jpegs() {
+        let root = temp_root("compact");
+        let mut source = RgbImage::new(2_400, 1_600);
+        for (x, y, pixel) in source.enumerate_pixels_mut() {
+            *pixel = Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]);
+        }
+        let source = DynamicImage::ImageRgb8(source);
+        let mut encoded_source = Cursor::new(Vec::new());
+        source.write_to(&mut encoded_source, ImageFormat::Png).unwrap();
+
+        let cached = cache_image(&root, &"b".repeat(64), "image/png", encoded_source.get_ref()).unwrap();
+        assert!(cached.original_path.ends_with("preview.jpg"));
+        assert!(cached.thumbnail_path.ends_with("thumbnail.jpg"));
+        assert!(cached.cache_bytes < encoded_source.get_ref().len() as i64);
+        assert!(image::open(&cached.original_path).unwrap().dimensions().0 <= PREVIEW_EDGE);
+        assert!(image::open(&cached.original_path).unwrap().dimensions().1 <= PREVIEW_EDGE);
+        assert!(image::open(&cached.thumbnail_path).unwrap().dimensions().0 <= THUMBNAIL_EDGE);
+        assert!(image::open(&cached.thumbnail_path).unwrap().dimensions().1 <= THUMBNAIL_EDGE);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preserves_special_formats_and_removes_legacy_files_after_success() {
+        let root = temp_root("preserve");
+        let sha = "c".repeat(64);
+        let asset_dir = asset_cache_dir(&root, &sha).unwrap();
+        fs::create_dir_all(&asset_dir).unwrap();
+        fs::write(asset_dir.join("original.gif"), b"legacy").unwrap();
+
+        let cached = cache_image(&root, &sha, "image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").unwrap();
+        assert!(cached.original_path.ends_with("preview.svg"));
+        assert_eq!(cached.original_path, cached.thumbnail_path);
+        assert!(!asset_dir.join("original.gif").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn replaces_cache_file_without_losing_previous_content() {
-        let root = std::env::temp_dir().join(format!(
-            "quepic-preview-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
+        let root = temp_root("atomic");
         let path = root.join("image.bin");
         write_atomic(&path, b"first").unwrap();
         write_atomic(&path, b"second").unwrap();

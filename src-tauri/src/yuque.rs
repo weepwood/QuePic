@@ -11,7 +11,7 @@ const BROWSER_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7";
 const BROWSER_ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
 const BROWSER_CLIENT_HINT: &str = "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Microsoft Edge\";v=\"150\"";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-const MAX_IMAGE_DOWNLOAD_BYTES: usize = 30 * 1024 * 1024;
+const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &["yuque.com", "nlark.com"];
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +157,7 @@ pub async fn download_image(cookie: &str, remote_url: &str) -> Result<Downloaded
     }
 
     if response.content_length().unwrap_or(0) as usize > MAX_IMAGE_DOWNLOAD_BYTES {
-        return Err("远程图片超过 30 MB 缓存限制。".into());
+        return Err("远程图片超过 50 MB 缓存限制。".into());
     }
 
     let mime_type = response
@@ -179,7 +179,7 @@ pub async fn download_image(cookie: &str, remote_url: &str) -> Result<Downloaded
         .map_err(|error| format!("读取语雀图片数据失败：{error}"))?
     {
         if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_DOWNLOAD_BYTES {
-            return Err("远程图片超过 30 MB 缓存限制。".into());
+            return Err("远程图片超过 50 MB 缓存限制。".into());
         }
         bytes.extend_from_slice(&chunk);
     }
