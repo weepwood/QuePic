@@ -360,7 +360,15 @@ async fn upload_image(
 
     let attempt_id = database::record_upload_attempt(&database_path, &account_name)?;
     let file_size = input.bytes.len() as i64;
-    let remote_url = yuque::upload(&cookie, &file_name, &input.mime_type, input.bytes).await?;
+    let remote_url = yuque::upload(
+        &cookie,
+        &file_name,
+        &input.mime_type,
+        input.bytes,
+        input.attachable_id,
+        &input.referer_url,
+    )
+    .await?;
     database::mark_upload_attempt_success(&database_path, attempt_id)?;
 
     let asset = AssetRecord {
@@ -548,6 +556,10 @@ fn validate_upload(input: &UploadInput) -> Result<(), String> {
     if !ALLOWED_MIME_TYPES.contains(&input.mime_type.as_str()) {
         return Err(format!("不支持的图片格式：{}", input.mime_type));
     }
+    if input.attachable_id <= 0 {
+        return Err("尚未配置有效的账号上传上下文文档。".into());
+    }
+    yuque::normalize_document_url(&input.referer_url)?;
     Ok(())
 }
 
@@ -638,6 +650,7 @@ pub fn run() {
             ensure_preview,
             upload_image,
             yuque_openapi::create_yuque_document,
+            yuque_openapi::resolve_upload_context,
         ])
         .run(tauri::generate_context!())
         .expect("QuePic 启动失败");

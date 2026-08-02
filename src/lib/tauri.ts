@@ -7,12 +7,54 @@ import type {
   PreviewResult,
   SaveYuqueDocumentInput,
   SecretStatus,
-  UploadQuotaStatus,
-  UploadResult,
-  YuqueDocumentResult,
+    UploadContextResult,
+    UploadQuotaStatus,
+    UploadResult,
+    YuqueDocumentResult,
 } from '../types';
 
+const UPLOAD_CONTEXT_PREFIX = 'quepic-upload-context:';
+
+function uploadContextKey(accountName: string): string {
+    return `${UPLOAD_CONTEXT_PREFIX}${encodeURIComponent(accountName.trim())}`;
+}
+
+export function getStoredUploadContext(accountName: string): UploadContextResult | null {
+    try {
+        const raw = localStorage.getItem(uploadContextKey(accountName));
+        if (!raw) return null;
+        const context = JSON.parse(raw) as UploadContextResult;
+        if (
+            context.account_name !== accountName.trim()
+            || !Number.isSafeInteger(context.attachable_id)
+            || context.attachable_id <= 0
+            || !context.document_url.startsWith('https://www.yuque.com/')
+        ) return null;
+        return context;
+    } catch {
+        return null;
+    }
+}
+
+export function saveStoredUploadContext(context: UploadContextResult): void {
+    localStorage.setItem(uploadContextKey(context.account_name), JSON.stringify(context));
+}
+
+export function clearStoredUploadContext(accountName: string): void {
+    localStorage.removeItem(uploadContextKey(accountName));
+}
+
+export async function resolveUploadContext(
+    accountName: string,
+    documentUrl: string,
+): Promise<UploadContextResult> {
+    return invoke<UploadContextResult>('resolve_upload_context', {
+        input: { account_name: accountName, document_url: documentUrl },
+    });
+}
+
 function resolveImageMimeType(file: File): string {
+
   if (file.type.startsWith('image/')) return file.type;
   const extension = file.name.split('.').pop()?.toLowerCase();
   const mimeTypes: Record<string, string> = {
@@ -116,16 +158,24 @@ export async function uploadImage(
   height: number | null,
   category: string,
 ): Promise<UploadResult> {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-  return invoke<UploadResult>('upload_image', {
+    const context = getStoredUploadContext(accountName);
+    if (!context) {
+        throw new Error(`账号“${accountName}”尚未配置上传上下文文档，请前往设置验证一个有权限的语雀文档 URL。`);
+    }
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    return invoke<UploadResult>('upload_image', {
+
     input: {
       file_name: file.name,
       mime_type: resolveImageMimeType(file),
       bytes,
       width,
       height,
-      account_name: accountName,
-      category,
+            account_name: accountName,
+        category,
+        attachable_id: context.attachable_id,
+        referer_url: context.document_url,
+
     },
   });
 }

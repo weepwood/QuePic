@@ -19,6 +19,20 @@ pub struct SaveYuqueDocumentInput {
     pub body: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ResolveUploadContextInput {
+    pub account_name: String,
+    pub document_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadContextResult {
+    pub account_name: String,
+    pub attachable_id: i64,
+    pub document_url: String,
+    pub title: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct YuqueDocumentResult {
     pub id: i64,
@@ -65,6 +79,40 @@ struct YuqueBook {
 struct YuqueLocation {
     namespace: String,
     document_slug: Option<String>,
+}
+
+#[tauri::command]
+pub async fn resolve_upload_context(
+    input: ResolveUploadContextInput,
+) -> Result<UploadContextResult, String> {
+    let account_name = validate_account_name(&input.account_name)?.to_string();
+    let token = openapi_token::load(&account_name)?;
+    let location = parse_yuque_url(&input.document_url, true)?;
+    let slug = location
+        .document_slug
+        .as_deref()
+        .ok_or_else(|| "上传上下文 URL 缺少文档标识。".to_string())?;
+    let client = secure_client()?;
+    let repo = fetch_repo(&client, &token, &location.namespace).await?;
+    let namespace = repo
+        .namespace
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&location.namespace)
+        .to_string();
+    let document = fetch_document(&client, &token, &namespace, slug).await?;
+    if document.id <= 0 {
+        return Err("语雀返回的上传上下文文档 ID 无效。".into());
+    }
+    let document_url = build_document_url(&namespace, &document.slug)
+        .ok_or_else(|| "无法生成上传上下文文档 URL。".to_string())?;
+    Ok(UploadContextResult {
+        account_name,
+        attachable_id: document.id,
+        document_url,
+        title: document.title,
+    })
 }
 
 #[tauri::command]

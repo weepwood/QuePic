@@ -31,6 +31,8 @@ pub struct UploadInput {
     pub height: Option<i64>,
     pub account_name: String,
     pub category: String,
+    pub attachable_id: i64,
+    pub referer_url: String,
 }
 
 #[derive(Debug, Serialize)]

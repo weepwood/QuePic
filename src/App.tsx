@@ -47,14 +47,20 @@ import {
   getCacheStats,
   getCredentialStatus,
   getOpenApiTokenStatus,
-  getUploadQuotaStatus,
-  listAccountProfiles,
+    getUploadQuotaStatus,
+    getStoredUploadContext,
+    listAccountProfiles,
+
   listAssets,
   openYuqueLogin,
   saveAccountProfile,
   saveCookie,
-  saveOpenApiToken,
-  updateAssetCategory,
+    saveOpenApiToken,
+    resolveUploadContext,
+    saveStoredUploadContext,
+    clearStoredUploadContext,
+    updateAssetCategory,
+
   uploadImage,
 } from './lib/tauri';
 import {
@@ -69,8 +75,10 @@ import type {
   AssetRecord,
   CacheStats,
   StoredUploadQueueItem,
-  UploadQueueItem,
-  UploadQuotaStatus,
+    UploadContextResult,
+    UploadQueueItem,
+    UploadQuotaStatus,
+
   ViewKey,
 } from './types';
 
@@ -226,8 +234,16 @@ export default function App() {
   const [accountProfiles, setAccountProfiles] = useState<AccountProfile[]>([]);
   const [accountSwitching, setAccountSwitching] = useState(false);
   const [credentialReady, setCredentialReady] = useState(false);
-  const [tokenReady, setTokenReady] = useState(false);
-  const [cookieInput, setCookieInput] = useState('');
+    const [tokenReady, setTokenReady] = useState(false);
+    const [uploadContext, setUploadContext] = useState<UploadContextResult | null>(
+        () => getStoredUploadContext(initialAccount),
+    );
+    const [uploadContextInput, setUploadContextInput] = useState(
+        () => getStoredUploadContext(initialAccount)?.document_url || '',
+    );
+    const [uploadContextBusy, setUploadContextBusy] = useState(false);
+    const [cookieInput, setCookieInput] = useState('');
+
   const [tokenInput, setTokenInput] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [tokenBusy, setTokenBusy] = useState(false);
@@ -332,7 +348,10 @@ export default function App() {
   const handleSwitchAccount = useCallback(async (rawAccount: string) => {
     const nextAccount = rawAccount.trim() || DEFAULT_ACCOUNT;
     if (nextAccount === activeAccountRef.current) {
+      const context = getStoredUploadContext(nextAccount);
       setAccountDraft(nextAccount);
+      setUploadContext(context);
+      setUploadContextInput(context?.document_url || '');
       await loadAccountContext(nextAccount);
       return;
     }
@@ -343,6 +362,9 @@ export default function App() {
       localStorage.setItem('quepic-account', nextAccount);
       setAccountName(nextAccount);
       setAccountDraft(nextAccount);
+      const context = getStoredUploadContext(nextAccount);
+      setUploadContext(context);
+      setUploadContextInput(context?.document_url || '');
       await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);
       showToast('success', `已切换到账号“${nextAccount}”。上传身份已更新，共享图库保持不变。`);
     } catch (error) {
@@ -530,7 +552,31 @@ export default function App() {
     }
   };
 
-  const handleClearToken = async () => {
+  const handleSaveUploadContext = async () => {
+    if (!uploadContextInput.trim()) return;
+    if (!tokenReady) return showToast('error', '请先为当前账号保存 OpenAPI Token。');
+    setUploadContextBusy(true);
+    try {
+        const context = await resolveUploadContext(accountName, uploadContextInput.trim());
+        saveStoredUploadContext(context);
+        setUploadContext(context);
+        setUploadContextInput(context.document_url);
+        showToast('success', `上传上下文已绑定到文档“${context.title}”。`);
+    } catch (error) {
+        showToast('error', normalizeError(error));
+    } finally {
+        setUploadContextBusy(false);
+    }
+};
+
+    const handleClearUploadContext = () => {
+    clearStoredUploadContext(accountName);
+    setUploadContext(null);
+    setUploadContextInput('');
+    showToast('success', '已清除当前账号的上传上下文。');
+};
+
+    const handleClearToken = async () => {
     setTokenBusy(true);
     try {
       await clearOpenApiToken(accountName);
@@ -637,6 +683,10 @@ export default function App() {
     if (!credentialReady) {
       setView('settings');
       return showToast('error', '请先为当前账号登录语雀并保存会话。');
+    }
+    if (!uploadContext) {
+      setView('settings');
+      return showToast('error', '请先为当前账号配置一个有权限的语雀文档作为上传上下文。');
     }
     if (!quotaAvailable) return showToast('error', `当前小时上传额度已用完，请在 ${formatResetTime(quota?.reset_at || null)} 后继续。`);
     const ids = queueRef.current
@@ -863,7 +913,7 @@ export default function App() {
         </div>
         <div className="credential-summary">
           <span className={credentialReady ? 'dot ready' : 'dot'} />
-          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{scheduledUploadCount ? `${scheduledUploadCount} 项等待自动上传` : tokenReady ? '会话与 Token 已就绪' : '前往设置完善配置'}</small></div>
+          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{scheduledUploadCount ? `${scheduledUploadCount} 项等待自动上传` : uploadContext ? `上传文档：${uploadContext.title}` : tokenReady ? '请配置上传上下文文档' : '前往设置完善配置'}</small></div>
         </div>
       </aside>
 
@@ -934,7 +984,7 @@ export default function App() {
                   <div><span>UPLOAD QUEUE · {accountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
                   <div className="queue-heading-actions">
                     <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />一小时后上传</button>
-                    <button className="button primary compact" disabled={!credentialReady || !quotaAvailable || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button>
+                    <button className="button primary compact" disabled={!credentialReady || !uploadContext || !quotaAvailable || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button>
                   </div>
                 </div>
                 <div className="quota-strip">
@@ -946,6 +996,7 @@ export default function App() {
                   <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一次自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>应用关闭时队列仍会保留，下次启动后自动补传已到期任务。</small></div>
                 )}
                 {!credentialReady && <div className="warning">当前账号尚未保存语雀会话；队列可继续添加，但到点后会暂停并提示登录。</div>}
+                {credentialReady && !uploadContext && <div className="warning">当前账号尚未配置上传上下文文档。请在设置中验证一个该账号有权限访问的语雀文档 URL。</div>}
                 {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>当前账号的待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
@@ -1100,7 +1151,17 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="panel settings-panel quota-panel">
+                <div className="panel settings-panel upload-context-panel">
+                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>每个账号绑定自己有权限的语雀文档，避免多个账号共用固定文档 ID 导致上传失败。</p></div><ExternalLink size={20} /></div>
+                <label className="field"><span>语雀文档 URL</span><input type="url" value={uploadContextInput} onChange={(event) => setUploadContextInput(event.target.value)} placeholder="https://www.yuque.com/账号/知识库/文档" /><small>使用当前账号的 OpenAPI Token 验证文档并解析数字 ID；本地只保存文档 URL、ID 和标题。</small></label>
+                {uploadContext && <p className="panel-note">已绑定：{uploadContext.title} · 文档 ID {uploadContext.attachable_id}</p>}
+                <div className="actions">
+                  <button className="button primary" disabled={uploadContextBusy || !tokenReady || !uploadContextInput.trim()} onClick={() => void handleSaveUploadContext()}>{uploadContextBusy ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并保存</button>
+                  <button className="button danger" disabled={uploadContextBusy || !uploadContext} onClick={handleClearUploadContext}><Trash2 size={17} />清除上下文</button>
+                </div>
+              </div>
+
+              <div className="panel settings-panel quota-panel">
                   <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传速度与额度</h2><p>为语雀上传接口保留安全余量，并支持队列跨小时自动续传。</p></div><Gauge size={20} /></div>
                   <div className="quota-metrics">
                     <div><strong>{quota?.used ?? 0}</strong><small>过去一小时尝试</small></div>

@@ -14,8 +14,10 @@ import type React from 'react';
 import {
   getCredentialStatus,
   getOpenApiTokenStatus,
-  getUploadQuotaStatus,
-  saveYuqueDocument,
+    getUploadQuotaStatus,
+    getStoredUploadContext,
+    saveYuqueDocument,
+
   uploadImage,
 } from '../lib/tauri';
 import type { UploadQuotaStatus, YuqueDocumentResult } from '../types';
@@ -127,8 +129,10 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
   const [error, setError] = useState('');
   const [result, setResult] = useState<YuqueDocumentResult | null>(null);
 
-  const running = progress.stage !== 'idle';
-  const orderedNames = useMemo(() => files.map(pathInsideFolder), [files]);
+    const running = progress.stage !== 'idle';
+    const uploadContextReady = Boolean(getStoredUploadContext(accountName));
+    const orderedNames = useMemo(() => files.map(pathInsideFolder), [files]);
+
   const parsedTarget = useMemo(() => {
     try {
       const knowledgeBase = parseYuqueUrl(knowledgeBaseUrl, false);
@@ -210,6 +214,7 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
     if (files.length === 0) return setError('请先选择一个包含图片的文件夹。');
     if (!credentialReady) return setError('当前账号尚未保存语雀登录会话，请先前往设置完成登录。');
     if (!tokenReady) return setError('当前账号尚未保存 OpenAPI Token，请先前往设置保存。');
+    if (!uploadContextReady) return setError('当前账号尚未配置上传上下文文档，请先前往设置验证一个语雀文档 URL。');
     if (quota && quota.remaining <= 0) {
       return setError(`当前小时上传额度已用完，请在 ${formatResetTime(quota.reset_at)} 后继续。`);
     }
@@ -300,6 +305,9 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
           </div>
           <div className={tokenReady ? 'status-card ready' : 'status-card'}>
             <strong>OpenAPI Token</strong><small>{tokenReady ? '已安全保存' : '前往设置保存'}</small>
+          </div>
+          <div className={uploadContextReady ? 'status-card ready' : 'status-card'}>
+            <strong>上传上下文</strong><small>{uploadContextReady ? '账号文档已绑定' : '前往设置配置'}</small>
           </div>
           <div className="status-card">
             <strong>小时额度</strong>
@@ -413,7 +421,7 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
           <button
             className="button primary"
             type="button"
-            disabled={running || files.length === 0 || !credentialReady || !tokenReady || Boolean(parsedTarget.error)}
+            disabled={running || files.length === 0 || !credentialReady || !tokenReady || !uploadContextReady || Boolean(parsedTarget.error)}
             onClick={() => void startUpload()}
           >
             {running ? <LoaderCircle className="spin" size={17} /> : <FolderUp size={17} />}
