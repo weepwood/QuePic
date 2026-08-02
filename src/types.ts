@@ -97,6 +97,7 @@ export interface UploadQuotaStatus {
   remaining: number;
   retry_after_seconds: number;
   reset_at: string | null;
+  /** 兼容旧客户端字段；连续上传模式下固定为 0。 */
   minimum_interval_seconds: number;
 }
 
