@@ -311,13 +311,11 @@ export async function appendImagesToDailyDocument(
     second: '2-digit',
     hour12: false,
   });
-  const assetIds = [...new Set(images.map((image) => image.asset_id))].sort((left, right) => left - right);
-  const batchMarker = `<!-- quepic-daily:${assetIds.join(',')} -->`;
   const body = [
-    batchMarker,
     `## ${time}`,
     '',
     ...images.flatMap((image) => [
+      `<!-- quepic-image:${image.asset_id} -->`,
       `![${escapeMarkdownAlt(image.file_name)}](${image.remote_url})`,
       '',
     ]),
