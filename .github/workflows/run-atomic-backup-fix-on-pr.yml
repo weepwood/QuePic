@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -49,7 +48,7 @@ jobs:
         shell: bash
         run: |
           cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-          npm ci
+          npm install
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml
 
