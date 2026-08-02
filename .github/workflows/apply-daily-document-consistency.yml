@@ -1,4 +1,4 @@
-name: Apply daily document consistency fix
+name: Clean daily document consistency fix
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  apply:
+  clean:
     runs-on: ubuntu-latest
     steps:
       - name: Check out pull request branch
@@ -16,34 +16,31 @@ jobs:
         with:
           ref: feat/yuque-library-token-tier
           fetch-depth: 0
-      - name: Apply reviewed changes
+      - name: Clean diagnostics and formatting
         shell: bash
         run: |
-          set +e
-          git fetch -q origin automation/daily-document-consistency
-          git show FETCH_HEAD:scripts/apply_daily_document_consistency.py > /tmp/apply_daily_document_consistency.py
-          python /tmp/apply_daily_document_consistency.py > /tmp/daily-document-fix.log 2>&1
-          apply_status=$?
-          set -e
-
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/App.tsx')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              "        if (activeAccountRef.current === item.accountName) {\nawait refreshAccountStatus(item.accountName);\n        }",
+              "        if (activeAccountRef.current === item.accountName) {\n          await refreshAccountStatus(item.accountName);\n        }",
+          )
+          text = text.replace(
+              "        const dailyImages: DailyDocumentImage[] = [];\n      const dailyItems: UploadQueueItem[] = [];",
+              "        const dailyImages: DailyDocumentImage[] = [];\n        const dailyItems: UploadQueueItem[] = [];",
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm -f DAILY_DOCUMENT_FIX_ERROR.txt
+          git checkout 5a249de9b767de3d884c26a1717c52d8f87f1f95 -- src-tauri/src/accounts.rs src-tauri/src/credentials.rs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if [ "$apply_status" -ne 0 ]; then
-            {
-              echo "Daily document consistency fix failed."
-              echo
-              cat /tmp/daily-document-fix.log
-            } > DAILY_DOCUMENT_FIX_ERROR.txt
-            git add DAILY_DOCUMENT_FIX_ERROR.txt
-            git commit -m "chore: 记录每日文档一致性修复日志"
-            git push origin HEAD:feat/yuque-library-token-tier
+          git add -A
+          if git diff --cached --quiet; then
             exit 0
           fi
-
-          rustfmt --edition 2021 src-tauri/src/yuque_openapi.rs
-          git checkout 5a249de9b767de3d884c26a1717c52d8f87f1f95 -- src-tauri/src/accounts.rs src-tauri/src/credentials.rs
-          rm -f DAILY_DOCUMENT_FIX_ERROR.txt
-          git add -A
-          git commit -m "fix: 持久化重试并幂等写入每日图片文档"
+          git commit -m "chore: 清理审查诊断并统一代码格式"
           git push origin HEAD:feat/yuque-library-token-tier
