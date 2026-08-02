@@ -43,7 +43,7 @@ jobs:
           python3 .github/scripts/apply_image_library_backend.py
           python3 .github/scripts/fix_image_library_output.py
 
-      - name: Format and verify
+      - name: Format Rust sources
         run: |
           rustfmt --edition 2021 \
             src-tauri/src/models.rs \
@@ -51,15 +51,45 @@ jobs:
             src-tauri/src/preview.rs \
             src-tauri/src/lib.rs \
             src-tauri/src/yuque_openapi.rs
-          npm install --silent
-          npm run icons
-          npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Install frontend dependencies
+        run: npm install --silent
+
+      - name: Generate validation icons
+        run: npm run icons
+
+      - name: Build React frontend
+        run: npm run build 2>&1 | tee /tmp/frontend-build.log
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tee /tmp/cargo-check.log
+
+      - name: Test Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib 2>&1 | tee /tmp/cargo-test.log
+
+      - name: Capture failure log
+        if: failure()
+        run: |
+          {
+            echo '# QuePic image library build failure'
+            echo
+            for file in /tmp/frontend-build.log /tmp/cargo-check.log /tmp/cargo-test.log; do
+              if [ -f "$file" ]; then
+                echo "## $(basename "$file")"
+                tail -n 240 "$file"
+                echo
+              fi
+            done
+          } > .github/image-library-build.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/image-library-build.log
+          git commit -m "chore: 保存图片管理构建失败日志" || true
+          git push origin HEAD:feat/image-library-overhaul || true
 
       - name: Commit backend implementation
         run: |
-          rm -f package-lock.json
+          rm -f package-lock.json .github/image-library-build.log
           git checkout origin/main -- src-tauri/icons src-tauri/gen || true
           rm .github/scripts/apply_image_library_backend.py
           rm .github/scripts/prepare_image_library_patch.py
