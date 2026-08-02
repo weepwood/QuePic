@@ -1,0 +1,65 @@
+name: Run atomic backup fix on PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.head_ref == 'fix/atomic-backup-restore'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Extract and apply source patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/apply-atomic-backup-fix.yml').read_text(encoding='utf-8')
+          start_marker = "      - name: Apply deterministic source patch\n        shell: bash\n        run: |\n"
+          end_marker = "\n      - name: Format and test"
+          start = source.index(start_marker) + len(start_marker)
+          end = source.index(end_marker, start)
+          script = textwrap.dedent(source[start:end])
+          Path('/tmp/apply-quepic-fix.sh').write_text(script, encoding='utf-8')
+          PY
+          bash /tmp/apply-quepic-fix.sh
+
+      - name: Format and test
+        shell: bash
+        run: |
+          cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+          npm ci
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Commit patched sources
+        shell: bash
+        run: |
+          rm .github/workflows/apply-atomic-backup-fix.yml
+          rm .github/workflows/run-atomic-backup-fix-on-pr.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: 保证备份恢复期间数据库原子切换"
+          git push origin HEAD:fix/atomic-backup-restore
