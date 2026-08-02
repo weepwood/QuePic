@@ -727,13 +727,13 @@ export default function App() {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || item.status === 'uploading' || item.status === 'success') return null;
     if (item.result) {
-      markQueueItem(id, {
+      const restored = markQueueItem(id, {
         status: 'success',
         uploadAccountName: item.uploadAccountName || uploadAccountName,
         scheduledAt: null,
         error: undefined,
       });
-      await removeStoredQueueItem(id);
+      if (restored) await saveStoredQueueItem(toStoredQueueItem(restored));
       return item.result;
     }
     const credential = await getCredentialStatus(uploadAccountName);
@@ -758,14 +758,14 @@ export default function App() {
         item.category,
         item.tags || [],
       );
-      markQueueItem(id, {
+      const succeeded = markQueueItem(id, {
         status: 'success',
         result,
         uploadAccountName,
         scheduledAt: null,
         error: undefined,
       });
-      await removeStoredQueueItem(id);
+      if (succeeded) await saveStoredQueueItem(toStoredQueueItem(succeeded));
       if (!deferRefresh) {
         await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
         if (activeAccountRef.current === uploadAccountName) {
@@ -948,7 +948,10 @@ export default function App() {
     let dailyDocumentError = '';
     if (dailyImages.length > 0) {
       try {
-        dailyDocumentTitle = (await appendImagesToDailyDocument(targetPrimary, dailyImages))?.title || '';
+        const dailyDocument = await appendImagesToDailyDocument(targetPrimary, dailyImages);
+        if (!dailyDocument) throw new Error('主账号当天文档未返回有效结果。');
+        dailyDocumentTitle = dailyDocument.title;
+        await Promise.all(dailyItems.map((item) => removeStoredQueueItem(item.id)));
       } catch (error) {
         dailyDocumentError = await persistDailyDocumentSyncFailure(dailyItems, error);
       }
