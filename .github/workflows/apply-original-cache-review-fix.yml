@@ -1,0 +1,48 @@
+name: Apply original cache review fix
+
+on:
+  push:
+    branches: [automation/original-cache-review-fix-2]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/yuque-library-token-tier
+          fetch-depth: 0
+      - name: Apply or diagnose reviewed source changes
+        shell: bash
+        run: |
+          set +e
+          python scripts/apply_original_cache_review_fix.py > /tmp/original-cache-fix.log 2>&1
+          apply_status=$?
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout 5a249de9b767de3d884c26a1717c52d8f87f1f95 -- .github/workflows/ci.yml
+
+          if [ "$apply_status" -ne 0 ]; then
+            {
+              echo "Original cache fix failed."
+              echo
+              cat /tmp/original-cache-fix.log
+            } > ORIGINAL_CACHE_FIX_ERROR.txt
+            git add -A
+            git commit -m "chore: 记录原图缓存修复失败日志"
+            git push origin HEAD:feat/yuque-library-token-tier
+            exit 0
+          fi
+
+          rustup default stable > /dev/null
+          cargo fmt --manifest-path src-tauri/Cargo.toml >> /tmp/original-cache-fix.log 2>&1
+          rm -f scripts/apply_original_cache_review_fix.py .quepic-run-original-cache-fix ORIGINAL_CACHE_FIX_ERROR.txt
+          git add -A
+          git commit -m "fix: 保留真实原图并拆分预览缓存"
+          git push origin HEAD:feat/yuque-library-token-tier
