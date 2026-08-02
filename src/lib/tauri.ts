@@ -4,16 +4,21 @@ import type {
   AssetRecord,
   CacheStats,
   CredentialStatus,
+  DailyDocumentImage,
   PreviewResult,
+  SaveOriginalResult,
   SaveYuqueDocumentInput,
   SecretStatus,
   UploadContextResult,
   UploadQuotaStatus,
   UploadResult,
   YuqueDocumentResult,
+  YuqueDocumentSummary,
+  YuqueRepositorySummary,
 } from '../types';
 
 const UPLOAD_CONTEXT_PREFIX = 'quepic-upload-context:';
+const dailyDocumentRequests = new Map<string, Promise<YuqueDocumentResult | null>>();
 
 function uploadContextKey(accountName: string): string {
   return `${UPLOAD_CONTEXT_PREFIX}${encodeURIComponent(accountName.trim())}`;
@@ -56,6 +61,40 @@ export async function resolveUploadContext(
     input: {
       account_name: accountName,
       document_url: documentUrl,
+    },
+  });
+}
+
+export async function listYuqueRepositories(accountName: string): Promise<YuqueRepositorySummary[]> {
+  return invoke<YuqueRepositorySummary[]>('list_yuque_repositories', { accountName });
+}
+
+export async function ensureQuePicRepository(accountName: string): Promise<YuqueRepositorySummary> {
+  return invoke<YuqueRepositorySummary>('ensure_quepic_repository', { accountName });
+}
+
+export async function listYuqueDocuments(
+  accountName: string,
+  namespace: string,
+): Promise<YuqueDocumentSummary[]> {
+  return invoke<YuqueDocumentSummary[]>('list_yuque_documents', {
+    input: {
+      account_name: accountName,
+      namespace,
+    },
+  });
+}
+
+export async function deleteYuqueDocument(
+  accountName: string,
+  repositoryId: number,
+  documentId: number,
+): Promise<void> {
+  return invoke('delete_yuque_document', {
+    input: {
+      account_name: accountName,
+      repository_id: repositoryId,
+      document_id: documentId,
     },
   });
 }
@@ -145,6 +184,10 @@ export async function ensurePreview(
   });
 }
 
+export async function saveOriginalImage(assetId: number): Promise<SaveOriginalResult> {
+  return invoke<SaveOriginalResult>('save_original_image', { assetId });
+}
+
 export async function getCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>('cache_stats');
 }
@@ -191,4 +234,98 @@ export async function saveYuqueDocument(
   input: SaveYuqueDocumentInput,
 ): Promise<YuqueDocumentResult> {
   return invoke<YuqueDocumentResult>('create_yuque_document', { input });
+}
+
+function localDateKey(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function escapeMarkdownAlt(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
+}
+
+async function resolveDailyImageDocument(
+  accountName: string,
+): Promise<YuqueDocumentResult | null> {
+  const token = await getOpenApiTokenStatus(accountName);
+  if (!token.configured) return null;
+
+  const repository = await ensureQuePicRepository(accountName);
+  const documents = await listYuqueDocuments(accountName, repository.namespace);
+  const title = localDateKey();
+  const existing = documents.find((document) => document.title.trim() === title);
+  const document: YuqueDocumentResult = existing
+    ? {
+        id: existing.id,
+        title: existing.title,
+        slug: existing.slug,
+        url: existing.url,
+        created: false,
+        namespace: repository.namespace,
+      }
+    : await saveYuqueDocument({
+        account_name: accountName,
+        knowledge_base_url: repository.url,
+        document_url: null,
+        title,
+        body: `# ${title}\n\n> QuePic 每日图片记录`,
+      });
+
+  if (!document.url) throw new Error('当天语雀文档没有可用 URL。');
+  const context = await resolveUploadContext(accountName, document.url);
+  saveStoredUploadContext(context);
+  return document;
+}
+
+export function ensureDailyImageDocument(
+  accountName: string,
+): Promise<YuqueDocumentResult | null> {
+  const key = accountName.trim();
+  const current = dailyDocumentRequests.get(key);
+  if (current) return current;
+
+  const request = resolveDailyImageDocument(key).finally(() => {
+    if (dailyDocumentRequests.get(key) === request) dailyDocumentRequests.delete(key);
+  });
+  dailyDocumentRequests.set(key, request);
+  return request;
+}
+
+export async function appendImagesToDailyDocument(
+  accountName: string,
+  images: DailyDocumentImage[],
+): Promise<YuqueDocumentResult | null> {
+  if (images.length === 0) return null;
+  const document = await ensureDailyImageDocument(accountName);
+  if (!document?.url) return null;
+  const repositoryUrl = new URL(document.url);
+  const segments = repositoryUrl.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) throw new Error('无法从当天文档解析知识库 URL。');
+  const knowledgeBaseUrl = `${repositoryUrl.origin}/${segments[0]}/${segments[1]}`;
+  const time = new Date().toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const body = [
+    `## ${time}`,
+    '',
+    ...images.flatMap((image) => [
+      `<!-- quepic-image:${image.asset_id} -->`,
+      `![${escapeMarkdownAlt(image.file_name)}](${image.remote_url})`,
+      '',
+    ]),
+  ].join('\n').trim();
+
+  return saveYuqueDocument({
+    account_name: accountName,
+    knowledge_base_url: knowledgeBaseUrl,
+    document_url: document.url,
+    title: document.title,
+    body,
+  });
 }

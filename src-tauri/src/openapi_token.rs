@@ -12,18 +12,19 @@ pub fn save_openapi_token(account_name: String, token: String) -> Result<Credent
     entry(&account_name)?
         .set_password(token)
         .map_err(|error| format!("无法写入系统密钥库中的 OpenAPI Token：{error}"))?;
-    Ok(CredentialStatus { configured: true, account_name })
+    Ok(CredentialStatus {
+        configured: true,
+        account_name,
+    })
 }
 
 #[tauri::command]
 pub fn openapi_token_status(account_name: String) -> Result<CredentialStatus, String> {
     let account_name = normalize_account_name(&account_name)?;
-    let configured = match entry(&account_name)?.get_password() {
-        Ok(value) => validate_token(&value).is_ok(),
-        Err(Error::NoEntry) => false,
-        Err(error) => return Err(format!("无法读取系统密钥库中的 OpenAPI Token：{error}")),
-    };
-    Ok(CredentialStatus { configured, account_name })
+    Ok(CredentialStatus {
+        configured: configured(&account_name)?,
+        account_name,
+    })
 }
 
 #[tauri::command]
@@ -32,6 +33,15 @@ pub fn clear_openapi_token(account_name: String) -> Result<(), String> {
     match entry(&account_name)?.delete_credential() {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("无法从系统密钥库删除 OpenAPI Token：{error}")),
+    }
+}
+
+pub fn configured(account_name: &str) -> Result<bool, String> {
+    let account_name = normalize_account_name(account_name)?;
+    match entry(&account_name)?.get_password() {
+        Ok(value) => Ok(validate_token(&value).is_ok()),
+        Err(Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("无法读取系统密钥库中的 OpenAPI Token：{error}")),
     }
 }
 

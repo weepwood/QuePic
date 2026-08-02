@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use reqwest::{header, redirect::Policy};
-use tokio::{sync::{Mutex, OwnedSemaphorePermit, Semaphore}, time::{sleep, Instant}};
+use tokio::{
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
+    time::{sleep, Instant},
+};
 use url::Url;
 
 const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
@@ -69,7 +72,10 @@ pub async fn download_preview(
 
     Err(format!(
         "无法通过已上传 URL 获取图片：{}",
-        errors.last().cloned().unwrap_or_else(|| "远程地址不可用。".into())
+        errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "远程地址不可用。".into())
     ))
 }
 
@@ -83,7 +89,10 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
 
     let mut response = client
         .get(url.clone())
-        .header(header::ACCEPT, "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        .header(
+            header::ACCEPT,
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        )
         .header(header::USER_AGENT, USER_AGENT)
         .send()
         .await
@@ -93,7 +102,10 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
         return Err("远程图片地址返回重定向，已拒绝继续请求。".into());
     }
     if !response.status().is_success() {
-        return Err(format!("远程图片请求失败（HTTP {}）。", response.status().as_u16()));
+        return Err(format!(
+            "远程图片请求失败（HTTP {}）。",
+            response.status().as_u16()
+        ));
     }
     if response.content_length().unwrap_or(0) as usize > MAX_IMAGE_DOWNLOAD_BYTES {
         return Err("远程图片超过 50 MB 下载限制。".into());
@@ -130,14 +142,14 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
 }
 
 fn preview_candidates(url: &Url, prefer_original: bool) -> Vec<Url> {
+    if prefer_original {
+        return vec![without_image_transform(url)];
+    }
+
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let has_transform = url.query_pairs().any(|(key, _)| key == "x-oss-process");
     let mut candidates = Vec::new();
-
-    if !prefer_original
-        && (host == "nlark.com" || host.ends_with(".nlark.com"))
-        && !has_transform
-    {
+    if (host == "nlark.com" || host.ends_with(".nlark.com")) && !has_transform {
         let mut optimized = url.clone();
         optimized
             .query_pairs_mut()
@@ -146,6 +158,27 @@ fn preview_candidates(url: &Url, prefer_original: bool) -> Vec<Url> {
     }
     candidates.push(url.clone());
     candidates
+}
+
+pub fn original_image_url(raw_url: &str) -> Result<String, String> {
+    Ok(without_image_transform(&normalize_remote_url(raw_url)?).to_string())
+}
+
+fn without_image_transform(url: &Url) -> Url {
+    let retained = url
+        .query_pairs()
+        .filter(|(key, _)| key != "x-oss-process")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let mut original = url.clone();
+    original.set_query(None);
+    if !retained.is_empty() {
+        let mut pairs = original.query_pairs_mut();
+        for (key, value) in retained {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    original
 }
 
 fn normalize_remote_url(raw_url: &str) -> Result<Url, String> {
@@ -173,7 +206,7 @@ fn normalize_remote_url(raw_url: &str) -> Result<Url, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_remote_url, preview_candidates};
+    use super::{normalize_remote_url, original_image_url, preview_candidates};
 
     #[test]
     fn creates_optimized_nlark_candidate_for_grid_thumbnail() {
@@ -185,9 +218,13 @@ mod tests {
     }
 
     #[test]
-    fn uses_original_url_only_for_detail_preview() {
-        let url = normalize_remote_url("https://cdn.nlark.com/yuque/test.png").unwrap();
-        assert_eq!(preview_candidates(&url, true), vec![url]);
+    fn strips_transform_for_original_download() {
+        let raw = "https://cdn.nlark.com/yuque/test.png?token=abc&x-oss-process=image/resize,w_640";
+        let original = original_image_url(raw).unwrap();
+        assert!(original.contains("token=abc"));
+        assert!(!original.contains("x-oss-process"));
+        let url = normalize_remote_url(raw).unwrap();
+        assert_eq!(preview_candidates(&url, true)[0].as_str(), original);
     }
 
     #[test]

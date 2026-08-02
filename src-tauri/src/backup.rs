@@ -225,8 +225,7 @@ fn create_backup_archive(
     if target.exists() {
         fs::remove_file(target).map_err(|error| format!("无法覆盖已有备份文件：{error}"))?;
     }
-    fs::rename(&temporary_archive, target)
-        .map_err(|error| format!("无法提交备份文件：{error}"))?;
+    fs::rename(&temporary_archive, target).map_err(|error| format!("无法提交备份文件：{error}"))?;
     Ok(())
 }
 
@@ -281,8 +280,7 @@ fn restore_backup_archive(
             if !manifest.includes_cache {
                 return Err("该备份不包含图片缓存。".into());
             }
-            cache_files =
-                extract_cache_entries(&mut archive, &imported_cache, &mut total_bytes)?;
+            cache_files = extract_cache_entries(&mut archive, &imported_cache, &mut total_bytes)?;
         }
         Ok::<_, String>(())
     })();
@@ -356,8 +354,7 @@ fn restore_library_transaction(
         fs::copy(imported_database, &staged_database)
             .map_err(|error| format!("无法暂存导入数据库：{error}"))?;
         validate_database(&staged_database)?;
-        fs::create_dir_all(&staged_cache)
-            .map_err(|error| format!("无法暂存导入缓存：{error}"))?;
+        fs::create_dir_all(&staged_cache).map_err(|error| format!("无法暂存导入缓存：{error}"))?;
         if let Some(imported_cache) = imported_cache {
             copy_directory_contents(imported_cache, &staged_cache)?;
         }
@@ -509,26 +506,17 @@ fn reindex_cache(database_path: &Path, cache_root: &Path) -> Result<(), String> 
             continue;
         }
         let directory = cache_root.join(&sha256[..2]).join(&sha256);
-        let Some(original_path) = find_cache_file(&directory, "preview.") else {
+        let original_path = find_cache_file(&directory, "original.");
+        let thumbnail_path = find_cache_file(&directory, "preview.")
+            .or_else(|| find_cache_file(&directory, "thumbnail."))
+            .or_else(|| original_path.clone());
+        if original_path.is_none() && thumbnail_path.is_none() {
             continue;
-        };
-        let thumbnail_path =
-            find_cache_file(&directory, "thumbnail.").unwrap_or_else(|| original_path.clone());
-        let original_bytes = fs::metadata(&original_path)
-            .map(|value| value.len())
-            .unwrap_or(0);
-        let thumbnail_bytes = if thumbnail_path == original_path {
-            0
-        } else {
-            fs::metadata(&thumbnail_path)
-                .map(|value| value.len())
-                .unwrap_or(0)
-        };
+        }
         let cached = preview::CachedPreview {
-            original_path: original_path.to_string_lossy().into_owned(),
-            thumbnail_path: thumbnail_path.to_string_lossy().into_owned(),
-            cache_bytes: i64::try_from(original_bytes.saturating_add(thumbnail_bytes))
-                .unwrap_or(i64::MAX),
+            original_path: original_path.map(|path| path.to_string_lossy().into_owned()),
+            thumbnail_path: thumbnail_path.map(|path| path.to_string_lossy().into_owned()),
+            cache_bytes: 0,
             cached_at: Utc::now().to_rfc3339(),
         };
         database::upsert_cached_preview(database_path, asset_id, &cached, "imported_backup")?;
@@ -585,8 +573,8 @@ fn add_directory<W: Write + Seek>(
 ) -> Result<(), String> {
     let mut directories = vec![source_root.to_path_buf()];
     while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("无法读取缓存目录：{error}"))?
+        for entry in
+            fs::read_dir(&directory).map_err(|error| format!("无法读取缓存目录：{error}"))?
         {
             let entry = entry.map_err(|error| format!("无法读取缓存条目：{error}"))?;
             let metadata = entry
@@ -646,8 +634,7 @@ fn extract_entry<R: Read + Seek>(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("无法创建导入目录：{error}"))?;
     }
-    let mut output =
-        File::create(target).map_err(|error| format!("无法创建导入文件：{error}"))?;
+    let mut output = File::create(target).map_err(|error| format!("无法创建导入文件：{error}"))?;
     io::copy(&mut entry, &mut output).map_err(|error| format!("无法提取 {name}：{error}"))?;
     Ok(())
 }
@@ -674,13 +661,11 @@ fn extract_cache_entries<R: Read + Seek>(
         account_archive_bytes(total_bytes, entry.size())?;
         let target = target_root.join(relative);
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("无法创建缓存导入目录：{error}"))?;
+            fs::create_dir_all(parent).map_err(|error| format!("无法创建缓存导入目录：{error}"))?;
         }
         let mut output =
             File::create(&target).map_err(|error| format!("无法创建缓存文件：{error}"))?;
-        io::copy(&mut entry, &mut output)
-            .map_err(|error| format!("无法提取缓存文件：{error}"))?;
+        io::copy(&mut entry, &mut output).map_err(|error| format!("无法提取缓存文件：{error}"))?;
         extracted += 1;
     }
     Ok(extracted)
@@ -703,8 +688,8 @@ fn copy_directory_contents(source: &Path, target: &Path) -> Result<(), String> {
     while let Some((current_source, current_target)) = stack.pop() {
         fs::create_dir_all(&current_target)
             .map_err(|error| format!("无法创建缓存目录：{error}"))?;
-        for entry in fs::read_dir(&current_source)
-            .map_err(|error| format!("无法读取导入缓存：{error}"))?
+        for entry in
+            fs::read_dir(&current_source).map_err(|error| format!("无法读取导入缓存：{error}"))?
         {
             let entry = entry.map_err(|error| format!("无法读取导入缓存条目：{error}"))?;
             let file_type = entry
@@ -809,13 +794,8 @@ mod tests {
             .unwrap();
         drop(imported);
 
-        let result = restore_library_transaction(
-            &database_path,
-            &imported_database,
-            &cache_path,
-            None,
-            &[],
-        );
+        let result =
+            restore_library_transaction(&database_path, &imported_database, &cache_path, None, &[]);
         assert!(result.is_err());
 
         let restored = Connection::open(&database_path).unwrap();

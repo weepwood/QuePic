@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use reqwest::{
     header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, USER_AGENT},
@@ -9,10 +9,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::openapi_token;
+use crate::{credentials, openapi_token, yuque};
 
 const YUQUE_API_BASE: &str = "https://www.yuque.com/api/v2";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_LIST_ITEMS: usize = 1_000;
+const MANAGED_REPOSITORY_NAME: &str = "QuePic 文件夹文档";
+const MANAGED_REPOSITORY_SLUG: &str = "quepic-folder-docs";
+const MANAGED_REPOSITORY_DESCRIPTION: &str =
+    "由 QuePic 自动创建，用于保存文件夹转出的 Markdown 文档。";
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 const BROWSER_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7";
 
@@ -31,12 +36,26 @@ pub struct ResolveUploadContextInput {
     pub document_url: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListYuqueDocumentsInput {
+    pub account_name: String,
+    pub namespace: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteYuqueDocumentInput {
+    pub account_name: String,
+    pub repository_id: i64,
+    pub document_id: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadContextResult {
     pub account_name: String,
     pub attachable_id: i64,
     pub document_url: String,
     pub title: String,
+    pub source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,20 +68,52 @@ pub struct YuqueDocumentResult {
     pub namespace: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct YuqueRepoResponse {
-    data: YuqueRepo,
+#[derive(Debug, Clone, Serialize)]
+pub struct YuqueRepositorySummary {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub namespace: String,
+    pub description: Option<String>,
+    pub public: i64,
+    pub items_count: i64,
+    pub updated_at: Option<String>,
+    pub url: String,
+    pub managed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct YuqueDocumentSummary {
+    pub id: i64,
+    pub repository_id: i64,
+    pub title: String,
+    pub slug: String,
+    pub format: Option<String>,
+    pub updated_at: Option<String>,
+    pub word_count: Option<i64>,
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct YuqueRepo {
+struct YuqueApiResponse<T> {
+    data: T,
+}
+
+#[derive(Debug, Deserialize)]
+struct YuqueUser {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct YuqueRepository {
     id: i64,
+    name: String,
+    slug: String,
     namespace: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct YuqueResponse {
-    data: YuqueDocument,
+    description: Option<String>,
+    public: Option<Value>,
+    items_count: Option<i64>,
+    updated_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,11 +124,16 @@ struct YuqueDocument {
     format: Option<String>,
     body: Option<String>,
     body_draft: Option<String>,
+    book_id: Option<i64>,
     book: Option<YuqueBook>,
+    updated_at: Option<String>,
+    content_updated_at: Option<String>,
+    word_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct YuqueBook {
+    id: Option<i64>,
     namespace: Option<String>,
 }
 
@@ -92,33 +148,145 @@ pub async fn resolve_upload_context(
     input: ResolveUploadContextInput,
 ) -> Result<UploadContextResult, String> {
     let account_name = validate_account_name(&input.account_name)?.to_string();
-    let token = openapi_token::load(&account_name)?;
     let location = parse_yuque_url(&input.document_url, true)?;
-    let slug = location
-        .document_slug
-        .as_deref()
-        .ok_or_else(|| "上传上下文 URL 缺少文档标识。".to_string())?;
-    let client = secure_client()?;
-    let repo = fetch_repo(&client, &token, &location.namespace).await?;
-    let namespace = repo
-        .namespace
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&location.namespace)
-        .to_string();
-    let document = fetch_document(&client, &token, &namespace, slug).await?;
-    if document.id <= 0 {
-        return Err("语雀返回的上传上下文文档 ID 无效。".into());
+
+    if openapi_token::configured(&account_name)? {
+        let token = openapi_token::load(&account_name)?;
+        let slug = location
+            .document_slug
+            .as_deref()
+            .ok_or_else(|| "上传上下文 URL 缺少文档标识。".to_string())?;
+        let client = secure_client()?;
+        let repo = fetch_repo(&client, &token, &location.namespace).await?;
+        let namespace = repo
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&location.namespace)
+            .to_string();
+        let document = fetch_document(&client, &token, &namespace, slug).await?;
+        if document.id <= 0 {
+            return Err("语雀返回的上传上下文文档 ID 无效。".into());
+        }
+        let document_url = build_document_url(&namespace, &document.slug)
+            .ok_or_else(|| "无法生成上传上下文文档 URL。".to_string())?;
+        return Ok(UploadContextResult {
+            account_name,
+            attachable_id: document.id,
+            document_url,
+            title: document.title,
+            source: "openapi".into(),
+        });
     }
-    let document_url = build_document_url(&namespace, &document.slug)
-        .ok_or_else(|| "无法生成上传上下文文档 URL。".to_string())?;
+
+    let cookie = credentials::load(&account_name)?;
+    let context = yuque::resolve_document_context(&cookie, &input.document_url).await?;
     Ok(UploadContextResult {
         account_name,
-        attachable_id: document.id,
-        document_url,
-        title: document.title,
+        attachable_id: context.attachable_id,
+        document_url: context.document_url,
+        title: context.title,
+        source: "session".into(),
     })
+}
+
+#[tauri::command]
+pub async fn list_yuque_repositories(
+    account_name: String,
+) -> Result<Vec<YuqueRepositorySummary>, String> {
+    let account_name = validate_account_name(&account_name)?;
+    let token = openapi_token::load(account_name)?;
+    let client = secure_client()?;
+    let user = fetch_current_user(&client, &token).await?;
+    list_repositories(&client, &token, &user.login).await
+}
+
+#[tauri::command]
+pub async fn ensure_quepic_repository(
+    account_name: String,
+) -> Result<YuqueRepositorySummary, String> {
+    let account_name = validate_account_name(&account_name)?;
+    let token = openapi_token::load(account_name)?;
+    let client = secure_client()?;
+    let user = fetch_current_user(&client, &token).await?;
+    let repositories = list_repositories(&client, &token, &user.login).await?;
+    if let Some(existing) = repositories
+        .into_iter()
+        .find(|repository| repository.slug == MANAGED_REPOSITORY_SLUG)
+    {
+        return Ok(existing);
+    }
+
+    let endpoint = format!("{YUQUE_API_BASE}/users/{}/repos", user.login);
+    let response = client
+        .post(endpoint)
+        .header("X-Auth-Token", &token)
+        .header(ACCEPT, "application/json")
+        .json(&json!({
+            "name": MANAGED_REPOSITORY_NAME,
+            "slug": MANAGED_REPOSITORY_SLUG,
+            "description": MANAGED_REPOSITORY_DESCRIPTION,
+            "public": "0",
+            "type": "Book"
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("创建 QuePic 专用知识库失败：{error}"))?;
+
+    let status = response.status();
+    let text = request_text(response, "创建 QuePic 专用知识库").await;
+    match text {
+        Ok(text) => {
+            let repository = serde_json::from_str::<YuqueApiResponse<YuqueRepository>>(&text)
+                .map(|payload| payload.data)
+                .map_err(|error| format!("解析新知识库响应失败：{error}"))?;
+            Ok(repository_summary(repository, Some(&user.login)))
+        }
+        Err(error) if status.as_u16() == 400 || status.as_u16() == 409 => {
+            let repositories = list_repositories(&client, &token, &user.login).await?;
+            repositories
+                .into_iter()
+                .find(|repository| repository.slug == MANAGED_REPOSITORY_SLUG)
+                .ok_or(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
+pub async fn list_yuque_documents(
+    input: ListYuqueDocumentsInput,
+) -> Result<Vec<YuqueDocumentSummary>, String> {
+    let account_name = validate_account_name(&input.account_name)?;
+    let namespace = validate_namespace(&input.namespace)?;
+    let token = openapi_token::load(account_name)?;
+    let client = secure_client()?;
+    let repo = fetch_repo(&client, &token, &namespace).await?;
+    list_documents(&client, &token, repo.id, &namespace).await
+}
+
+#[tauri::command]
+pub async fn delete_yuque_document(input: DeleteYuqueDocumentInput) -> Result<(), String> {
+    let account_name = validate_account_name(&input.account_name)?;
+    if input.repository_id <= 0 || input.document_id <= 0 {
+        return Err("知识库或文档 ID 无效。".into());
+    }
+    let token = openapi_token::load(account_name)?;
+    let client = secure_client()?;
+    let endpoint = format!(
+        "{YUQUE_API_BASE}/repos/{}/docs/{}",
+        input.repository_id, input.document_id
+    );
+    let response = client
+        .delete(endpoint)
+        .header("X-Auth-Token", token)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| format!("删除语雀文档请求失败：{error}"))?;
+    request_text(response, "删除语雀文档").await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -169,10 +337,16 @@ pub async fn create_yuque_document(
             .as_deref()
             .is_some_and(|format| !format.eq_ignore_ascii_case("markdown"))
         {
-            return Err("目标文档不是 Markdown 格式。为避免破坏 Lake 文档，请新建 Markdown 文档后重试。".into());
+            return Err(
+                "目标文档不是 Markdown 格式。为避免破坏 Lake 文档，请新建 Markdown 文档后重试。"
+                    .into(),
+            );
         }
         let existing_body = existing.body.as_deref().or(existing.body_draft.as_deref());
         let merged_body = append_markdown(existing_body, body);
+        if existing_body.unwrap_or_default().trim() == merged_body.trim() {
+            return Ok(document_result(existing, &namespace, false));
+        }
         let updated = update_document(
             &client,
             &token,
@@ -189,7 +363,132 @@ pub async fn create_yuque_document(
     Ok(document_result(created, &namespace, true))
 }
 
-async fn fetch_repo(client: &Client, token: &str, namespace: &str) -> Result<YuqueRepo, String> {
+async fn fetch_current_user(client: &Client, token: &str) -> Result<YuqueUser, String> {
+    let endpoint = format!("{YUQUE_API_BASE}/user");
+    let text = request_text(
+        client
+            .get(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("读取语雀账号信息失败：{error}"))?,
+        "读取语雀账号信息",
+    )
+    .await?;
+    serde_json::from_str::<YuqueApiResponse<YuqueUser>>(&text)
+        .map(|payload| payload.data)
+        .map_err(|error| format!("解析语雀账号信息失败：{error}"))
+}
+
+async fn list_repositories(
+    client: &Client,
+    token: &str,
+    login: &str,
+) -> Result<Vec<YuqueRepositorySummary>, String> {
+    let mut repositories = Vec::new();
+    let mut seen = HashSet::new();
+    let mut offset = 0usize;
+
+    for _ in 0..50 {
+        let endpoint = format!("{YUQUE_API_BASE}/users/{login}/repos?type=Book&offset={offset}");
+        let text = request_text(
+            client
+                .get(endpoint)
+                .header("X-Auth-Token", token)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await
+                .map_err(|error| format!("读取语雀知识库列表失败：{error}"))?,
+            "读取语雀知识库列表",
+        )
+        .await?;
+        let page = serde_json::from_str::<YuqueApiResponse<Vec<YuqueRepository>>>(&text)
+            .map(|payload| payload.data)
+            .map_err(|error| format!("解析语雀知识库列表失败：{error}"))?;
+        if page.is_empty() {
+            break;
+        }
+
+        let mut added = 0usize;
+        for repository in page {
+            if seen.insert(repository.id) {
+                repositories.push(repository_summary(repository, Some(login)));
+                added += 1;
+            }
+        }
+        if added == 0 || repositories.len() >= MAX_LIST_ITEMS {
+            break;
+        }
+        offset += added;
+    }
+
+    repositories.sort_by(|left, right| {
+        right
+            .managed
+            .cmp(&left.managed)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(repositories)
+}
+
+async fn list_documents(
+    client: &Client,
+    token: &str,
+    repository_id: i64,
+    namespace: &str,
+) -> Result<Vec<YuqueDocumentSummary>, String> {
+    let mut documents = Vec::new();
+    let mut seen = HashSet::new();
+    let mut offset = 0usize;
+
+    for _ in 0..50 {
+        let endpoint = format!("{YUQUE_API_BASE}/repos/{namespace}/docs?offset={offset}");
+        let text = request_text(
+            client
+                .get(endpoint)
+                .header("X-Auth-Token", token)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await
+                .map_err(|error| format!("读取语雀文档列表失败：{error}"))?,
+            "读取语雀文档列表",
+        )
+        .await?;
+        let page = serde_json::from_str::<YuqueApiResponse<Vec<YuqueDocument>>>(&text)
+            .map(|payload| payload.data)
+            .map_err(|error| format!("解析语雀文档列表失败：{error}"))?;
+        if page.is_empty() {
+            break;
+        }
+
+        let mut added = 0usize;
+        for document in page {
+            if seen.insert(document.id) {
+                documents.push(document_summary(document, repository_id, namespace));
+                added += 1;
+            }
+        }
+        if added == 0 || documents.len() >= MAX_LIST_ITEMS {
+            break;
+        }
+        offset += added;
+    }
+
+    documents.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    Ok(documents)
+}
+
+async fn fetch_repo(
+    client: &Client,
+    token: &str,
+    namespace: &str,
+) -> Result<YuqueRepository, String> {
     let endpoint = format!("{YUQUE_API_BASE}/repos/{namespace}");
     let text = request_text(
         client
@@ -202,7 +501,7 @@ async fn fetch_repo(client: &Client, token: &str, namespace: &str) -> Result<Yuq
         "读取语雀知识库",
     )
     .await?;
-    serde_json::from_str::<YuqueRepoResponse>(&text)
+    serde_json::from_str::<YuqueApiResponse<YuqueRepository>>(&text)
         .map(|payload| payload.data)
         .map_err(|error| format!("解析语雀知识库响应失败：{error}"))
 }
@@ -275,8 +574,57 @@ async fn update_document(
     parse_document(&text, "解析语雀文档响应")
 }
 
+fn repository_summary(
+    repository: YuqueRepository,
+    fallback_login: Option<&str>,
+) -> YuqueRepositorySummary {
+    let namespace = repository
+        .namespace
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| fallback_login.map(|login| format!("{login}/{}", repository.slug)))
+        .unwrap_or_else(|| repository.slug.clone());
+    YuqueRepositorySummary {
+        id: repository.id,
+        name: repository.name,
+        slug: repository.slug.clone(),
+        namespace: namespace.clone(),
+        description: repository.description,
+        public: value_to_i64(repository.public.as_ref()).unwrap_or(0),
+        items_count: repository.items_count.unwrap_or(0),
+        updated_at: repository.updated_at,
+        url: format!("https://www.yuque.com/{namespace}"),
+        managed: repository.slug == MANAGED_REPOSITORY_SLUG,
+    }
+}
+
+fn document_summary(
+    document: YuqueDocument,
+    fallback_repository_id: i64,
+    namespace: &str,
+) -> YuqueDocumentSummary {
+    let repository_id = document
+        .book_id
+        .or_else(|| document.book.as_ref().and_then(|book| book.id))
+        .unwrap_or(fallback_repository_id);
+    let url = build_document_url(namespace, &document.slug)
+        .unwrap_or_else(|| format!("https://www.yuque.com/{namespace}/{}", document.slug));
+    YuqueDocumentSummary {
+        id: document.id,
+        repository_id,
+        title: document.title,
+        slug: document.slug,
+        format: document.format,
+        updated_at: document.updated_at.or(document.content_updated_at),
+        word_count: document.word_count,
+        url,
+    }
+}
+
 fn parse_document(text: &str, action: &str) -> Result<YuqueDocument, String> {
-    serde_json::from_str::<YuqueResponse>(text)
+    serde_json::from_str::<YuqueApiResponse<YuqueDocument>>(text)
         .map(|payload| payload.data)
         .map_err(|error| format!("{action}失败：{error}"))
 }
@@ -310,7 +658,10 @@ async fn request_text(response: Response, action: &str) -> Result<String, String
     } else {
         message
     };
-    Err(format!("{action}失败（HTTP {}）：{message}", status.as_u16()))
+    Err(format!(
+        "{action}失败（HTTP {}）：{message}",
+        status.as_u16()
+    ))
 }
 
 fn openapi_default_headers() -> HeaderMap {
@@ -354,7 +705,11 @@ fn parse_yuque_url(raw_url: &str, require_document: bool) -> Result<YuqueLocatio
 
     let segments = parsed
         .path_segments()
-        .map(|segments| segments.filter(|segment| !segment.is_empty()).collect::<Vec<_>>())
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     if segments.len() < 2 {
         return Err("语雀 URL 中缺少知识库路径，例如 /weepwood/index。".into());
@@ -362,7 +717,11 @@ fn parse_yuque_url(raw_url: &str, require_document: bool) -> Result<YuqueLocatio
     if require_document && segments.len() < 3 {
         return Err("目标文档 URL 中缺少文档标识。".into());
     }
-    if segments.iter().take(3).any(|segment| !is_safe_path_segment(segment)) {
+    if segments
+        .iter()
+        .take(3)
+        .any(|segment| !is_safe_path_segment(segment))
+    {
         return Err("语雀 URL 包含不支持的路径字符。".into());
     }
 
@@ -370,6 +729,19 @@ fn parse_yuque_url(raw_url: &str, require_document: bool) -> Result<YuqueLocatio
         namespace: format!("{}/{}", segments[0], segments[1]),
         document_slug: segments.get(2).map(|value| (*value).to_string()),
     })
+}
+
+fn validate_namespace(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_matches('/');
+    let segments = value.split('/').collect::<Vec<_>>();
+    if segments.len() != 2
+        || segments
+            .iter()
+            .any(|segment| !is_safe_path_segment(segment))
+    {
+        return Err("语雀知识库 namespace 无效。".into());
+    }
+    Ok(format!("{}/{}", segments[0], segments[1]))
 }
 
 fn is_safe_path_segment(value: &str) -> bool {
@@ -407,11 +779,58 @@ fn validate_title(value: &str) -> Result<&str, String> {
 
 fn append_markdown(existing: Option<&str>, addition: &str) -> String {
     let existing = existing.unwrap_or_default().trim();
-    if existing.is_empty() {
-        addition.trim().to_string()
-    } else {
-        format!("{existing}\n\n{}", addition.trim())
+    let addition = filter_new_daily_images(existing, addition);
+    if addition.is_empty() {
+        return existing.to_string();
     }
+    if existing.is_empty() {
+        addition
+    } else {
+        format!("{existing}\n\n{addition}")
+    }
+}
+
+fn filter_new_daily_images(existing: &str, addition: &str) -> String {
+    let lines = addition.lines().collect::<Vec<_>>();
+    let marker_indexes = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| is_daily_image_marker(line.trim()).then_some(index))
+        .collect::<Vec<_>>();
+    if marker_indexes.is_empty() {
+        return addition.trim().to_string();
+    }
+
+    let preamble = lines[..marker_indexes[0]].join("\n").trim().to_string();
+    let mut blocks = Vec::new();
+    for (position, start) in marker_indexes.iter().copied().enumerate() {
+        let end = marker_indexes
+            .get(position + 1)
+            .copied()
+            .unwrap_or(lines.len());
+        let marker = lines[start].trim();
+        if existing.contains(marker) {
+            continue;
+        }
+        let block = lines[start..end].join("\n").trim().to_string();
+        if !block.is_empty() {
+            blocks.push(block);
+        }
+    }
+    if blocks.is_empty() {
+        return String::new();
+    }
+
+    let mut parts = Vec::with_capacity(blocks.len() + 1);
+    if !preamble.is_empty() {
+        parts.push(preamble);
+    }
+    parts.extend(blocks);
+    parts.join("\n\n")
+}
+
+fn is_daily_image_marker(line: &str) -> bool {
+    line.starts_with("<!-- quepic-image:") && line.ends_with(" -->")
 }
 
 fn document_result(document: YuqueDocument, namespace: &str, created: bool) -> YuqueDocumentResult {
@@ -443,6 +862,14 @@ fn build_document_url(namespace: &str, slug: &str) -> Option<String> {
     Some(format!("https://www.yuque.com/{namespace}/{slug}"))
 }
 
+fn value_to_i64(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => number.as_i64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
 fn extract_error_message(body: &str) -> Option<String> {
     let value: Value = serde_json::from_str(body).ok()?;
     let message = [
@@ -459,10 +886,12 @@ fn extract_error_message(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use reqwest::header::{ACCEPT_LANGUAGE, USER_AGENT};
+    use serde_json::json;
 
     use super::{
         append_markdown, build_document_url, extract_error_message, openapi_default_headers,
-        parse_yuque_url, validate_account_name, BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
+        parse_yuque_url, validate_account_name, validate_namespace, value_to_i64,
+        BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
     };
 
     #[test]
@@ -493,9 +922,30 @@ mod tests {
     }
 
     #[test]
+    fn validates_repository_namespace() {
+        assert_eq!(validate_namespace("team/book").unwrap(), "team/book");
+        assert!(validate_namespace("team/book/doc").is_err());
+        assert!(validate_namespace("team/中文").is_err());
+    }
+
+    #[test]
     fn appends_without_destroying_existing_markdown() {
-        assert_eq!(append_markdown(Some("原有正文"), "![图片](url)"), "原有正文\n\n![图片](url)");
+        assert_eq!(
+            append_markdown(Some("原有正文"), "![图片](url)"),
+            "原有正文\n\n![图片](url)"
+        );
         assert_eq!(append_markdown(None, "![图片](url)"), "![图片](url)");
+    }
+
+    #[test]
+    fn does_not_append_duplicate_daily_images() {
+        let addition = "## 12:30:00\n\n<!-- quepic-image:12 -->\n![图片12](url12)\n\n<!-- quepic-image:18 -->\n![图片18](url18)";
+        let existing = "原有正文\n\n<!-- quepic-image:12 -->\n![图片12](url12)";
+        let merged = append_markdown(Some(existing), addition);
+        assert_eq!(merged.matches("quepic-image:12").count(), 1);
+        assert_eq!(merged.matches("quepic-image:18").count(), 1);
+        assert!(merged.contains("![图片18](url18)"));
+        assert_eq!(append_markdown(Some(&merged), addition), merged);
     }
 
     #[test]
@@ -522,10 +972,18 @@ mod tests {
     }
 
     #[test]
-    fn openapi_requests_use_browser_headers() {
+    fn parses_numeric_and_string_visibility() {
+        assert_eq!(value_to_i64(Some(&json!(2))), Some(2));
+        assert_eq!(value_to_i64(Some(&json!("3"))), Some(3));
+    }
+
+    #[test]
+    fn openapi_client_uses_browser_headers() {
         let headers = openapi_default_headers();
         assert_eq!(
-            headers.get(USER_AGENT).and_then(|value| value.to_str().ok()),
+            headers
+                .get(USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
             Some(BROWSER_USER_AGENT)
         );
         assert_eq!(
