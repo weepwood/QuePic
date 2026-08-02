@@ -1,19 +1,26 @@
+mod accounts;
+mod backup;
 mod credentials;
 mod database;
 mod models;
+mod openapi_token;
 mod preview;
+mod remote_preview;
 mod yuque;
 mod yuque_openapi;
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use chrono::Utc;
 use models::{
-    AssetRecord, CacheStats, CredentialStatus, PreviewResult, UploadInput, UploadResult,
+    AssetRecord, CacheStats, CredentialStatus, PreviewResult, UploadInput, UploadQuotaStatus,
+    UploadResult,
 };
 use preview::CachedPreview;
 use sha2::{Digest, Sha256};
@@ -24,6 +31,7 @@ const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const YUQUE_LOGIN_WINDOW: &str = "yuque-login";
 const YUQUE_LOGIN_URL: &str = "https://www.yuque.com/login";
 const YUQUE_UPLOAD_URL: &str = "https://www.yuque.com/api/upload/attach";
+const DEFAULT_CATEGORY: &str = "未分类";
 const ALLOWED_MIME_TYPES: &[&str] = &[
     "image/png",
     "image/jpeg",
@@ -41,16 +49,15 @@ struct AppState {
     database_path: PathBuf,
     preview_cache_dir: PathBuf,
     cache_lock: Arc<Mutex<()>>,
+    upload_gate: Arc<tokio::sync::Mutex<()>>,
+    preview_limiter: Arc<remote_preview::RequestLimiter>,
 }
 
 #[tauri::command]
 fn save_cookie(account_name: String, cookie: String) -> Result<CredentialStatus, String> {
     let account_name = normalize_account_name(&account_name)?;
     credentials::save(&account_name, &cookie)?;
-    Ok(CredentialStatus {
-        configured: true,
-        account_name,
-    })
+    Ok(CredentialStatus { configured: true, account_name })
 }
 
 #[tauri::command]
@@ -108,11 +115,7 @@ async fn capture_yuque_login(
 
     credentials::save(&account_name, &cookie_header)?;
     let _ = window.close();
-
-    Ok(CredentialStatus {
-        configured: true,
-        account_name,
-    })
+    Ok(CredentialStatus { configured: true, account_name })
 }
 
 #[tauri::command]
@@ -131,17 +134,51 @@ fn clear_cookie(account_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {
-    database::list_assets(&state.database_path)
+fn list_assets(
+    state: State<'_, AppState>,
+    account_name: String,
+) -> Result<Vec<AssetRecord>, String> {
+    let account_name = normalize_account_name(&account_name)?;
+    Ok(database::list_assets(&state.database_path)?
+        .into_iter()
+        .filter(|asset| asset.account_name == account_name)
+        .collect())
 }
 
 #[tauri::command]
-fn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {
-    database::cache_stats(&state.database_path)
+fn update_asset_category(
+    state: State<'_, AppState>,
+    id: i64,
+    category: String,
+) -> Result<AssetRecord, String> {
+    let category = normalize_category(&category)?;
+    database::update_asset_category(&state.database_path, id, &category)
 }
 
 #[tauri::command]
-async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, String> {
+fn cache_stats(
+    state: State<'_, AppState>,
+    account_name: String,
+) -> Result<CacheStats, String> {
+    let account_name = normalize_account_name(&account_name)?;
+    account_cache_stats(&state.database_path, &account_name)
+}
+
+#[tauri::command]
+fn upload_quota_status(
+    state: State<'_, AppState>,
+    account_name: String,
+) -> Result<UploadQuotaStatus, String> {
+    let account_name = normalize_account_name(&account_name)?;
+    database::upload_quota_status(&state.database_path, &account_name)
+}
+
+#[tauri::command]
+async fn clear_preview_cache(
+    state: State<'_, AppState>,
+    account_name: String,
+) -> Result<CacheStats, String> {
+    let account_name = normalize_account_name(&account_name)?;
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
@@ -153,7 +190,7 @@ async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, S
             .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
         preview::clear_cache(&preview_cache_dir)?;
         database::clear_previews(&database_path)?;
-        database::cache_stats(&database_path)
+        account_cache_stats(&database_path, &account_name)
     })
     .await
     .map_err(|error| format!("清理图片缓存任务失败：{error}"))?
@@ -162,15 +199,18 @@ async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, S
 #[tauri::command]
 fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let asset = database::find_by_id(&state.database_path, id)?;
-    let _guard = state
-        .cache_lock
-        .lock()
-        .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+    database::delete_asset(&state.database_path, id)?;
 
     if let Some(asset) = asset {
-        preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256)?;
+        if database::hash_reference_count(&state.database_path, &asset.sha256)? == 0 {
+            let _guard = state
+                .cache_lock
+                .lock()
+                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+            preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256)?;
+        }
     }
-    database::delete_asset(&state.database_path, id)
+    Ok(())
 }
 
 #[tauri::command]
@@ -184,6 +224,7 @@ async fn ensure_preview(
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
+    let preview_limiter = state.preview_limiter.clone();
     drop(state);
 
     let asset = database::find_by_id(&database_path, asset_id)?
@@ -197,37 +238,59 @@ async fn ensure_preview(
             existing_local_path(&asset, prefer_original)
         };
         if let Some(path) = existing {
-            return Ok(local_preview_result(asset_id, path));
+            return Ok(local_preview_result(asset_id, path, "local"));
         }
     }
 
-    let download_result = match credentials::load(&asset.account_name) {
+    let public_error = match remote_preview::download_preview(
+        preview_limiter,
+        &asset.remote_url,
+        prefer_original,
+    )
+    .await
+    {
+        Ok(downloaded) => {
+            let preview = cache_and_record_task(
+                cache_lock.clone(),
+                preview_cache_dir.clone(),
+                database_path.clone(),
+                asset_id,
+                asset.sha256.clone(),
+                downloaded.mime_type,
+                downloaded.bytes,
+                "remote_url".into(),
+            )
+            .await?;
+            let path = if prefer_original { preview.original_path } else { preview.thumbnail_path };
+            return Ok(local_preview_result(asset_id, path, "remote_url"));
+        }
+        Err(error) => error,
+    };
+
+    let session_result = match credentials::load(&asset.account_name) {
         Ok(cookie) => yuque::download_image(&cookie, &asset.remote_url).await,
         Err(error) => Err(error),
     };
 
-    match download_result {
+    match session_result {
         Ok(downloaded) => {
             let preview = cache_and_record_task(
                 cache_lock,
                 preview_cache_dir,
-                database_path,
+                database_path.clone(),
                 asset_id,
                 asset.sha256,
                 downloaded.mime_type,
                 downloaded.bytes,
+                "yuque_session".into(),
             )
             .await?;
-
-            let path = if prefer_original {
-                preview.original_path
-            } else {
-                preview.thumbnail_path
-            };
-            Ok(local_preview_result(asset_id, path))
+            let path = if prefer_original { preview.original_path } else { preview.thumbnail_path };
+            Ok(local_preview_result(asset_id, path, "yuque_session"))
         }
-        Err(error) => {
-            let _ = database::mark_preview_error(&database_path, asset_id, &error);
+        Err(session_error) => {
+            let combined_error = format!("{public_error}；语雀会话回源失败：{session_error}");
+            let _ = database::mark_preview_error(&database_path, asset_id, &combined_error);
             if allow_wordpress_fallback {
                 let width = if prefer_original { Some(1_024) } else { Some(640) };
                 let proxy_url = yuque::wordpress_proxy_url(&asset.remote_url, width)?;
@@ -237,10 +300,10 @@ async fn ensure_preview(
                     proxy_url: Some(proxy_url),
                     source: "wordpress_proxy".into(),
                     cached: false,
-                    last_error: Some(error),
+                    last_error: Some(combined_error),
                 });
             }
-            Err(error)
+            Err(combined_error)
         }
     }
 }
@@ -254,54 +317,66 @@ async fn upload_image(
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
+    let upload_gate = state.upload_gate.clone();
     drop(state);
 
     let account_name = normalize_account_name(&input.account_name)?;
+    let category = normalize_category(&input.category)?;
     let file_name = sanitize_file_name(&input.file_name)?;
     let mut hasher = Sha256::new();
     hasher.update(&input.bytes);
     let sha256 = format!("{:x}", hasher.finalize());
     let cache_bytes = input.bytes.clone();
 
-    if let Some(existing) = database::find_by_hash(&database_path, &sha256)? {
-        let preview_missing = {
-            let _guard = cache_lock
-                .lock()
-                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
-            !preview::preview_exists(
-                existing.original_path.as_deref(),
-                existing.thumbnail_path.as_deref(),
-            )
-        };
-
-        if preview_missing {
-            let _ = cache_and_record_task(
-                cache_lock,
-                preview_cache_dir,
-                database_path.clone(),
-                existing.id,
-                sha256,
-                input.mime_type.clone(),
-                cache_bytes,
-            )
-            .await;
-        }
-        let asset = database::find_by_id(&database_path, existing.id)?.unwrap_or(existing);
-        return Ok(UploadResult {
-            asset,
-            deduplicated: true,
-        });
+    if let Some(existing) =
+        database::find_by_hash_for_account(&database_path, &account_name, &sha256)?
+    {
+        return reuse_existing_asset(
+            cache_lock,
+            preview_cache_dir,
+            database_path,
+            existing,
+            category,
+            sha256,
+            input.mime_type,
+            cache_bytes,
+        )
+        .await;
     }
 
     let cookie = credentials::load(&account_name)?;
+    let upload_guard = upload_gate.lock().await;
+
+    if let Some(existing) =
+        database::find_by_hash_for_account(&database_path, &account_name, &sha256)?
+    {
+        drop(upload_guard);
+        return reuse_existing_asset(
+            cache_lock,
+            preview_cache_dir,
+            database_path,
+            existing,
+            category,
+            sha256,
+            input.mime_type,
+            cache_bytes,
+        )
+        .await;
+    }
+
+    let quota = database::upload_quota_status(&database_path, &account_name)?;
+    if quota.remaining <= 0 {
+        let reset = quota.reset_at.unwrap_or_else(|| "稍后".into());
+        return Err(format!("当前账号过去一小时已达到 {} 次上传尝试，请在 {reset} 后继续。", quota.limit));
+    }
+    if quota.retry_after_seconds > 0 {
+        tokio::time::sleep(Duration::from_secs(quota.retry_after_seconds as u64)).await;
+    }
+
+    let attempt_id = database::record_upload_attempt(&database_path, &account_name)?;
     let file_size = input.bytes.len() as i64;
-    let remote_url = yuque::upload(
-        &cookie,
-        &file_name,
-        &input.mime_type,
-        input.bytes,
-    )
-    .await?;
+    let remote_url = yuque::upload(&cookie, &file_name, &input.mime_type, input.bytes).await?;
+    database::mark_upload_attempt_success(&database_path, attempt_id)?;
 
     let asset = AssetRecord {
         id: 0,
@@ -314,6 +389,7 @@ async fn upload_image(
         remote_url,
         account_name,
         uploaded_at: Utc::now().to_rfc3339(),
+        category,
         original_path: None,
         thumbnail_path: None,
         preview_source: "missing".into(),
@@ -326,13 +402,21 @@ async fn upload_image(
     let (saved_asset, deduplicated) = match database::insert_asset(&database_path, &asset) {
         Ok(saved) => (saved, false),
         Err(error) => {
-            if let Some(existing) = database::find_by_hash(&database_path, &asset.sha256)? {
-                (existing, true)
+            if let Some(existing) = database::find_by_hash_for_account(
+                &database_path,
+                &asset.account_name,
+                &asset.sha256,
+            )? {
+                (
+                    database::update_asset_category(&database_path, existing.id, &asset.category)?,
+                    true,
+                )
             } else {
                 return Err(format!("图片已上传，但保存本地索引失败：{error}"));
             }
         }
     };
+    drop(upload_guard);
 
     if let Err(error) = cache_and_record_task(
         cache_lock,
@@ -342,6 +426,7 @@ async fn upload_image(
         sha256,
         input.mime_type,
         cache_bytes,
+        "local".into(),
     )
     .await
     {
@@ -349,9 +434,48 @@ async fn upload_image(
     }
 
     let refreshed = database::find_by_id(&database_path, saved_asset.id)?.unwrap_or(saved_asset);
+    Ok(UploadResult { asset: refreshed, deduplicated })
+}
+
+async fn reuse_existing_asset(
+    cache_lock: Arc<Mutex<()>>,
+    preview_cache_dir: PathBuf,
+    database_path: PathBuf,
+    existing: AssetRecord,
+    category: String,
+    sha256: String,
+    mime_type: String,
+    cache_bytes: Vec<u8>,
+) -> Result<UploadResult, String> {
+    let existing = database::update_asset_category(&database_path, existing.id, &category)?;
+    let preview_missing = {
+        let _guard = cache_lock
+            .lock()
+            .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+        !preview::preview_exists(
+            existing.original_path.as_deref(),
+            existing.thumbnail_path.as_deref(),
+        )
+    };
+
+    if preview_missing {
+        let _ = cache_and_record_task(
+            cache_lock,
+            preview_cache_dir,
+            database_path.clone(),
+            existing.id,
+            sha256,
+            mime_type,
+            cache_bytes,
+            "local".into(),
+        )
+        .await;
+    }
+
+    let asset = database::find_by_id(&database_path, existing.id)?.unwrap_or(existing);
     Ok(UploadResult {
-        asset: refreshed,
-        deduplicated,
+        asset,
+        deduplicated: true,
     })
 }
 
@@ -363,23 +487,46 @@ async fn cache_and_record_task(
     sha256: String,
     mime_type: String,
     bytes: Vec<u8>,
+    source: String,
 ) -> Result<CachedPreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = cache_lock
             .lock()
             .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
-
         if database::find_by_id(&database_path, asset_id)?.is_none() {
             return Err("图片记录已删除，已取消建立缓存。".into());
         }
-
         let cached = preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)?;
-        database::upsert_cached_preview(&database_path, asset_id, &cached)
+        database::upsert_cached_preview(&database_path, asset_id, &cached, &source)
             .map_err(|error| format!("图片缓存已生成，但保存缓存索引失败：{error}"))?;
         Ok(cached)
     })
     .await
     .map_err(|error| format!("建立图片缓存任务失败：{error}"))?
+}
+
+fn account_cache_stats(path: &Path, account_name: &str) -> Result<CacheStats, String> {
+    let assets = database::list_assets(path)?;
+    let mut asset_count = 0_i64;
+    let mut cached_count = 0_i64;
+    let mut cache_bytes = 0_i64;
+    let mut counted_hashes = HashSet::new();
+
+    for asset in assets.into_iter().filter(|asset| asset.account_name == account_name) {
+        asset_count += 1;
+        if asset.cache_status == "ready" {
+            cached_count += 1;
+            if counted_hashes.insert(asset.sha256) {
+                cache_bytes = cache_bytes.saturating_add(asset.cache_bytes.unwrap_or(0));
+            }
+        }
+    }
+
+    Ok(CacheStats {
+        asset_count,
+        cached_count,
+        cache_bytes,
+    })
 }
 
 fn existing_local_path(asset: &AssetRecord, prefer_original: bool) -> Option<String> {
@@ -395,12 +542,12 @@ fn existing_local_path(asset: &AssetRecord, prefer_original: bool) -> Option<Str
         .map(ToOwned::to_owned)
 }
 
-fn local_preview_result(asset_id: i64, path: String) -> PreviewResult {
+fn local_preview_result(asset_id: i64, path: String, source: &str) -> PreviewResult {
     PreviewResult {
         asset_id,
         local_path: Some(path),
         proxy_url: None,
-        source: "local".into(),
+        source: source.into(),
         cached: true,
         last_error: None,
     }
@@ -424,8 +571,23 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("账号名称不能为空。".into());
     }
-    if value.len() > 80 {
-        return Err("账号名称过长。".into());
+    if value.chars().count() > 80 {
+        return Err("账号名称不能超过 80 个字符。".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("账号名称包含无效控制字符。".into());
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_category(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let value = if value.is_empty() { DEFAULT_CATEGORY } else { value };
+    if value.chars().count() > 80 {
+        return Err("图片分类不能超过 80 个字符。".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("图片分类包含无效控制字符。".into());
     }
     Ok(value.to_string())
 }
@@ -441,7 +603,6 @@ fn sanitize_file_name(value: &str) -> Result<String, String> {
         })
         .take(180)
         .collect();
-
     if sanitized.is_empty() {
         return Err("图片文件名无效。".into());
     }
@@ -451,11 +612,13 @@ fn sanitize_file_name(value: &str) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("quepic.db");
             database::initialize(&database_path).map_err(std::io::Error::other)?;
+            accounts::initialize(&database_path).map_err(std::io::Error::other)?;
 
             let preview_cache_dir = app.path().app_cache_dir()?.join("previews");
             fs::create_dir_all(&preview_cache_dir)?;
@@ -463,6 +626,8 @@ pub fn run() {
                 database_path,
                 preview_cache_dir,
                 cache_lock: Arc::new(Mutex::new(())),
+                upload_gate: Arc::new(tokio::sync::Mutex::new(())),
+                preview_limiter: Arc::new(remote_preview::RequestLimiter::new()),
             });
             Ok(())
         })
@@ -472,8 +637,17 @@ pub fn run() {
             capture_yuque_login,
             credential_status,
             clear_cookie,
+            openapi_token::save_openapi_token,
+            openapi_token::openapi_token_status,
+            openapi_token::clear_openapi_token,
+            accounts::list_account_profiles,
+            accounts::save_account_profile,
+            backup::export_backup,
+            backup::import_backup,
             list_assets,
+            update_asset_category,
             cache_stats,
+            upload_quota_status,
             clear_preview_cache,
             delete_asset,
             ensure_preview,

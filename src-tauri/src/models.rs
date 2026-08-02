@@ -12,6 +12,7 @@ pub struct AssetRecord {
     pub remote_url: String,
     pub account_name: String,
     pub uploaded_at: String,
+    pub category: String,
     pub original_path: Option<String>,
     pub thumbnail_path: Option<String>,
     pub preview_source: String,
@@ -29,6 +30,7 @@ pub struct UploadInput {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub account_name: String,
+    pub category: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,4 +60,15 @@ pub struct CacheStats {
     pub asset_count: i64,
     pub cached_count: i64,
     pub cache_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadQuotaStatus {
+    pub account_name: String,
+    pub used: i64,
+    pub limit: i64,
+    pub remaining: i64,
+    pub retry_after_seconds: i64,
+    pub reset_at: Option<String>,
+    pub minimum_interval_seconds: i64,
 }
