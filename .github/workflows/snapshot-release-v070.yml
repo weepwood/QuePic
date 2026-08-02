@@ -43,3 +43,5 @@ jobs:
           git add release-current-v0.7.0.json
           git commit -m "chore: snapshot v0.7.0 release" || exit 0
           git push origin HEAD:release/v0.7.0
+
+# refreshed after both platform jobs completed
