@@ -4,7 +4,9 @@ import type {
   AssetRecord,
   CacheStats,
   CredentialStatus,
+  DailyDocumentImage,
   PreviewResult,
+  SaveOriginalResult,
   SaveYuqueDocumentInput,
   SecretStatus,
   UploadContextResult,
@@ -181,6 +183,10 @@ export async function ensurePreview(
   });
 }
 
+export async function saveOriginalImage(assetId: number): Promise<SaveOriginalResult> {
+  return invoke<SaveOriginalResult>('save_original_image', { assetId });
+}
+
 export async function getCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>('cache_stats');
 }
@@ -227,4 +233,51 @@ export async function saveYuqueDocument(
   input: SaveYuqueDocumentInput,
 ): Promise<YuqueDocumentResult> {
   return invoke<YuqueDocumentResult>('create_yuque_document', { input });
+}
+
+function localDateKey(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function escapeMarkdownAlt(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
+}
+
+export async function appendImagesToDailyDocument(
+  accountName: string,
+  images: DailyDocumentImage[],
+): Promise<YuqueDocumentResult | null> {
+  if (images.length === 0) return null;
+  const token = await getOpenApiTokenStatus(accountName);
+  if (!token.configured) return null;
+
+  const repository = await ensureQuePicRepository(accountName);
+  const documents = await listYuqueDocuments(accountName, repository.namespace);
+  const title = localDateKey();
+  const existing = documents.find((document) => document.title.trim() === title);
+  const time = new Date().toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const body = [
+    `## ${time}`,
+    '',
+    ...images.flatMap((image) => [
+      `![${escapeMarkdownAlt(image.file_name)}](${image.remote_url})`,
+      '',
+    ]),
+  ].join('\n').trim();
+
+  return saveYuqueDocument({
+    account_name: accountName,
+    knowledge_base_url: repository.url,
+    document_url: existing?.url || null,
+    title,
+    body,
+  });
 }

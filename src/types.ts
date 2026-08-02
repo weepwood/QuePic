@@ -26,6 +26,16 @@ export interface UploadResult {
   deduplicated: boolean;
 }
 
+export interface SaveOriginalResult {
+  cancelled: boolean;
+  path: string | null;
+}
+
+export interface DailyDocumentImage {
+  file_name: string;
+  remote_url: string;
+}
+
 export type UploadStatus = 'waiting' | 'scheduled' | 'uploading' | 'success' | 'failed';
 
 export interface UploadQueueItem {

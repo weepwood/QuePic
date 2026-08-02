@@ -19,6 +19,7 @@ import {
   KeyRound,
   ListChecks,
   LoaderCircle,
+  Maximize2,
   LogIn,
   Plus,
   Save,
@@ -38,7 +39,9 @@ import type React from 'react';
 
 import { AssetPreview } from './components/AssetPreview';
 import { BatchDocumentUploader } from './components/BatchDocumentUploader';
+import { OriginalImageViewer } from './components/OriginalImageViewer';
 import {
+  appendImagesToDailyDocument,
   captureYuqueLogin,
   clearCookie,
   clearOpenApiToken,
@@ -93,6 +96,7 @@ const AUTO_UPLOAD_DELAY_MS = 60 * 60 * 1000;
 const IMAGE_EXTENSION = /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
 
 type LibrarySort = 'newest' | 'oldest' | 'name' | 'size' | 'category';
+type LibraryViewMode = 'original' | 'square';
 
 interface QueueItemRowProps {
   item: UploadQueueItem;
@@ -262,6 +266,10 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [librarySort, setLibrarySort] = useState<LibrarySort>('newest');
   const [selected, setSelected] = useState<AssetRecord | null>(null);
+  const [originalViewerAsset, setOriginalViewerAsset] = useState<AssetRecord | null>(null);
+  const [libraryViewMode, setLibraryViewMode] = useState<LibraryViewMode>(
+    () => localStorage.getItem('quepic-library-view') === 'square' ? 'square' : 'original',
+  );
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [categoryDraft, setCategoryDraft] = useState(DEFAULT_CATEGORY);
   const [bulkCategory, setBulkCategory] = useState(DEFAULT_CATEGORY);
@@ -646,7 +654,7 @@ export default function App() {
 
   const uploadOne = useCallback(async (id: string, deferRefresh = false) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
-    if (!item || item.status === 'uploading' || item.status === 'success') return false;
+    if (!item || item.status === 'uploading' || item.status === 'success') return null;
     const credential = await getCredentialStatus(item.accountName);
     if (!credential.configured) {
       const failed = markQueueItem(id, {
@@ -655,7 +663,7 @@ export default function App() {
         error: `账号“${item.accountName}”尚未保存有效语雀会话。`,
       });
       if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
-      return false;
+      return null;
     }
 
     markQueueItem(id, { status: 'uploading', scheduledAt: null, error: undefined });
@@ -669,7 +677,7 @@ export default function App() {
 await refreshAccountStatus(item.accountName);
         }
       }
-      return true;
+      return result;
     } catch (error) {
       const failed = markQueueItem(id, {
         status: 'failed',
@@ -680,9 +688,24 @@ await refreshAccountStatus(item.accountName);
       if (!deferRefresh && activeAccountRef.current === item.accountName) {
         await refreshAccountStatus(item.accountName);
       }
-      return false;
+      return null;
     }
   }, [markQueueItem, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles]);
+
+  const retryUploadOne = useCallback(async (id: string) => {
+    const item = queueRef.current.find((candidate) => candidate.id === id);
+    const result = await uploadOne(id);
+    if (!item || !result) return;
+    try {
+      const dailyDocument = await appendImagesToDailyDocument(item.accountName, [{
+        file_name: item.file.name,
+        remote_url: result.asset.remote_url,
+      }]);
+      if (dailyDocument) showToast('success', `图片已写入当天文档“${dailyDocument.title}”。`);
+    } catch (error) {
+      showToast('error', `图片上传成功，但当天文档同步失败：${normalizeError(error)}`);
+    }
+  }, [showToast, uploadOne]);
 
   const uploadAll = async () => {
     if (!credentialReady) {
@@ -723,9 +746,14 @@ await refreshAccountStatus(item.accountName);
 
       const immediateItems = pendingItems.slice(0, currentQuota.remaining);
       const overflowItems = pendingItems.slice(currentQuota.remaining);
+      const dailyImages: Array<{ file_name: string; remote_url: string }> = [];
       let successCount = 0;
       for (const item of immediateItems) {
-        if (await uploadOne(item.id, true)) successCount += 1;
+        const result = await uploadOne(item.id, true);
+        if (result) {
+          successCount += 1;
+          dailyImages.push({ file_name: item.file.name, remote_url: result.asset.remote_url });
+        }
       }
 
       let scheduledCount = 0;
@@ -738,11 +766,25 @@ await refreshAccountStatus(item.accountName);
       }
 
       await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles(), refreshAccountStatus(accountName)]);
+      let dailyDocumentTitle = '';
+      let dailyDocumentError = '';
+      if (dailyImages.length > 0) {
+        try {
+          dailyDocumentTitle = (await appendImagesToDailyDocument(accountName, dailyImages))?.title || '';
+        } catch (error) {
+          dailyDocumentError = normalizeError(error);
+        }
+      }
       const summary = [`已立即上传 ${successCount} 张`];
       if (scheduledCount > 0 && scheduledAt) {
         summary.push(`${scheduledCount} 张将在 ${formatScheduleTime(scheduledAt)} 自动继续`);
       }
-      showToast('success', summary.join('，'));
+      if (dailyDocumentTitle) summary.push(`已写入当天文档“${dailyDocumentTitle}”`);
+      if (dailyDocumentError) {
+        showToast('error', `${summary.join('，')}；当天文档同步失败：${dailyDocumentError}`);
+      } else {
+        showToast('success', summary.join('，'));
+      }
     } catch (error) {
       showToast('error', `批量上传失败：${normalizeError(error)}`);
     }
@@ -805,7 +847,18 @@ await refreshAccountStatus(item.accountName);
           await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');
           continue;
         }
-        for (const item of accountItems.slice(0, accountQuota.remaining)) await uploadOne(item.id, true);
+        const dailyImages: Array<{ file_name: string; remote_url: string }> = [];
+        for (const item of accountItems.slice(0, accountQuota.remaining)) {
+          const result = await uploadOne(item.id, true);
+          if (result) dailyImages.push({ file_name: item.file.name, remote_url: result.asset.remote_url });
+        }
+        if (dailyImages.length > 0) {
+          try {
+            await appendImagesToDailyDocument(account, dailyImages);
+          } catch (error) {
+            showToast('error', `账号“${account}”图片已上传，但当天文档同步失败：${normalizeError(error)}`);
+          }
+        }
         const overflow = accountItems.slice(accountQuota.remaining);
         if (overflow.length > 0) {
           const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
@@ -1054,7 +1107,7 @@ await refreshAccountStatus(item.accountName);
                 {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>当前账号的待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
-                      <QueueItemRow key={item.id} item={item} onRetry={uploadOne} onCopy={copyText} onRemove={removeQueueItem} />
+                      <QueueItemRow key={item.id} item={item} onRetry={retryUploadOne} onCopy={copyText} onRemove={removeQueueItem} />
                     ))}
                   </div>
                 )}
@@ -1071,10 +1124,14 @@ await refreshAccountStatus(item.accountName);
 
           {view === 'library' && (
             <div className="library-layout">
-              <div className="library-main">
+              <div className={libraryViewMode === 'original' ? 'library-main original-ratio-view' : 'library-main square-view'}>
                 <div className="library-heading">
                   <div><span>SHARED LOCAL FIRST ASSET INDEX</span><h2>共享图片内容管理</h2><p>所有账号使用同一个图库；账号切换只改变上传身份，不改变这里的内容。</p></div>
                   <div className="library-heading-controls">
+                    <div className="library-view-switch" role="group" aria-label="图库显示方式">
+                      <button className={libraryViewMode === 'original' ? 'active' : ''} onClick={() => { setLibraryViewMode('original'); localStorage.setItem('quepic-library-view', 'original'); }}><Images size={15} />原始比例</button>
+                      <button className={libraryViewMode === 'square' ? 'active' : ''} onClick={() => { setLibraryViewMode('square'); localStorage.setItem('quepic-library-view', 'square'); }}><Square size={15} />统一方格</button>
+                    </div>
                     <label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、分类、链接或类型" /></label>
                     <label className="library-sort"><ArrowUpDown size={16} /><select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}><option value="newest">最新上传</option><option value="oldest">最早上传</option><option value="name">文件名</option><option value="size">文件大小</option><option value="category">分类</option></select></label>
                   </div>
@@ -1119,7 +1176,8 @@ await refreshAccountStatus(item.accountName);
                           }}
                         >
                           <button className="asset-select" aria-label={checked ? '取消选择' : '选择图片'} onClick={(event) => { event.stopPropagation(); toggleAssetSelection(asset.id); }}>{checked ? <CheckSquare size={18} /> : <Square size={18} />}</button>
-                          <AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} />
+                          <button className="asset-original-action" title="原图显示" aria-label={`查看 ${asset.file_name} 原图`} onClick={(event) => { event.stopPropagation(); setOriginalViewerAsset(asset); }}><Maximize2 size={16} /></button>
+                          <AssetPreview asset={asset} preserveAspectRatio={libraryViewMode === 'original'} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} />
                           <div className="asset-card-body">
                             <strong>{asset.file_name}</strong>
                             <span className="asset-category-tag">{asset.category || DEFAULT_CATEGORY}</span>
@@ -1151,6 +1209,7 @@ await refreshAccountStatus(item.accountName);
                       </dl>
                       <label className="field detail-category-field"><span>图片分类</span><input value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} list="category-options" placeholder="未分类" /></label>
                       <button className="button primary" onClick={() => void handleSaveCategory()}><Save size={16} />保存分类</button>
+                      <button className="button secondary" onClick={() => setOriginalViewerAsset(selected)}><Maximize2 size={16} />原图显示</button>
                       <button className="button secondary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button>
                       <button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button>
                       <button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button>
@@ -1243,6 +1302,8 @@ await refreshAccountStatus(item.accountName);
           )}
         </section>
       </main>
+
+      {originalViewerAsset && <OriginalImageViewer asset={originalViewerAsset} cacheEpoch={cacheEpoch} onClose={() => setOriginalViewerAsset(null)} onCacheChanged={handlePreviewCached} />}
 
       {toast && <div className={toast.type === 'success' ? 'toast success' : 'toast error'}>{toast.type === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{toast.text}</span></div>}
     </div>

@@ -22,8 +22,10 @@ use models::{
     UploadResult,
 };
 use preview::CachedPreview;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
 const NO_TOKEN_MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -316,6 +318,61 @@ async fn ensure_preview(
             Err(combined_error)
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct SaveOriginalResult {
+    cancelled: bool,
+    path: Option<String>,
+}
+
+#[tauri::command]
+fn save_original_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    asset_id: i64,
+) -> Result<SaveOriginalResult, String> {
+    let asset = database::find_by_id(&state.database_path, asset_id)?
+        .ok_or_else(|| "图片记录不存在。".to_string())?;
+    let source = asset
+        .original_path
+        .as_deref()
+        .filter(|path| Path::new(path).is_file())
+        .ok_or_else(|| "原图尚未缓存，请先打开“原图显示”，等待加载完成后再保存。".to_string())?;
+    let file_name = sanitize_file_name(&asset.file_name)?;
+    let extension = Path::new(source)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+    let dialog = app
+        .dialog()
+        .file()
+        .set_title("保存 QuePic 原图")
+        .set_file_name(&file_name);
+    let selected = if let Some(extension) = extension.as_deref() {
+        dialog.add_filter("图片", &[extension]).blocking_save_file()
+    } else {
+        dialog.blocking_save_file()
+    };
+    let Some(selected) = selected else {
+        return Ok(SaveOriginalResult { cancelled: true, path: None });
+    };
+    let mut target = selected
+        .into_path()
+        .map_err(|error| format!("无法读取原图保存路径：{error}"))?;
+    if target.extension().is_none() {
+        if let Some(extension) = extension {
+            target.set_extension(extension);
+        }
+    }
+    if Path::new(source) != target {
+        fs::copy(source, &target)
+            .map_err(|error| format!("保存原图失败：{error}"))?;
+    }
+    Ok(SaveOriginalResult {
+        cancelled: false,
+        path: Some(target.to_string_lossy().into_owned()),
+    })
 }
 
 #[tauri::command]
@@ -712,6 +769,7 @@ pub fn run() {
             clear_preview_cache,
             delete_asset,
             ensure_preview,
+            save_original_image,
             upload_image,
             yuque_openapi::create_yuque_document,
             yuque_openapi::resolve_upload_context,

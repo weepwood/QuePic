@@ -10,6 +10,7 @@ import './feature-enhancements.css';
 import './queue-library.css';
 import './account-backup.css';
 import './ui-polish.css';
+import './original-viewer.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

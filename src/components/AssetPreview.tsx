@@ -9,6 +9,7 @@ import type { AssetRecord } from '../types';
 interface AssetPreviewProps {
   asset: AssetRecord;
   preferOriginal?: boolean;
+  preserveAspectRatio?: boolean;
   allowWordpressFallback: boolean;
   cacheEpoch: number;
   className?: string;
@@ -20,6 +21,7 @@ type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
 export function AssetPreview({
   asset,
   preferOriginal = false,
+  preserveAspectRatio = false,
   allowWordpressFallback,
   cacheEpoch,
   className = '',
@@ -37,6 +39,9 @@ export function AssetPreview({
     if (preferOriginal) return asset.original_path || asset.thumbnail_path;
     return asset.thumbnail_path || asset.original_path;
   }, [asset.original_path, asset.thumbnail_path, preferOriginal]);
+  const aspectRatio = preserveAspectRatio && asset.width && asset.height
+    ? `${asset.width} / ${asset.height}`
+    : undefined;
 
   useEffect(() => {
     if (preferOriginal) {
@@ -122,7 +127,11 @@ export function AssetPreview({
   };
 
   return (
-    <div ref={containerRef} className={`asset-preview ${className}`.trim()}>
+    <div
+      ref={containerRef}
+      className={`asset-preview ${preserveAspectRatio ? 'preserve-ratio' : ''} ${className}`.trim()}
+      style={aspectRatio ? { aspectRatio } : undefined}
+    >
       {src && <img src={src} alt={asset.file_name} onError={retryAfterImageError} />}
       {!src && state === 'loading' && <LoaderCircle className="spin preview-state-icon" size={24} />}
       {!src && state === 'failed' && (
