@@ -605,7 +605,11 @@ async fn reuse_existing_asset(
     cache_bytes: Vec<u8>,
 ) -> Result<UploadResult, String> {
     let existing = database::update_asset_category(&database_path, existing.id, &category)?;
-    let existing = database::update_asset_tags(&database_path, existing.id, &tags)?;
+    let existing = if tags.is_empty() {
+        existing
+    } else {
+        database::update_asset_tags(&database_path, existing.id, &tags)?
+    };
     let original_missing = {
         let _guard = cache_lock
             .lock()
