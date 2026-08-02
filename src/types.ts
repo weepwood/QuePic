@@ -91,24 +91,24 @@ export interface CacheStats {
 }
 
 export interface UploadQuotaStatus {
-    account_name: string;
-    used: number;
-    limit: number;
-    remaining: number;
-    retry_after_seconds: number;
-    reset_at: string | null;
-    minimum_interval_seconds: number;
+  account_name: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  retry_after_seconds: number;
+  reset_at: string | null;
+  minimum_interval_seconds: number;
 }
 
 export interface UploadContextResult {
-    account_name: string;
-    attachable_id: number;
-    document_url: string;
-    title: string;
+  account_name: string;
+  attachable_id: number;
+  document_url: string;
+  title: string;
+  source?: 'openapi' | 'session' | string;
 }
 
 export interface SaveYuqueDocumentInput {
-
   account_name: string;
   knowledge_base_url: string;
   document_url: string | null;
@@ -123,4 +123,28 @@ export interface YuqueDocumentResult {
   url: string | null;
   created: boolean;
   namespace: string;
+}
+
+export interface YuqueRepositorySummary {
+  id: number;
+  name: string;
+  slug: string;
+  namespace: string;
+  description: string | null;
+  public: number;
+  items_count: number;
+  updated_at: string | null;
+  url: string;
+  managed: boolean;
+}
+
+export interface YuqueDocumentSummary {
+  id: number;
+  repository_id: number;
+  title: string;
+  slug: string;
+  format: string | null;
+  updated_at: string | null;
+  word_count: number | null;
+  url: string;
 }
