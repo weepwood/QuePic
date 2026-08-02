@@ -237,7 +237,7 @@ export async function uploadImage(
   tags: string[],
   contextAccountName = accountName,
 ): Promise<UploadResult> {
-  const context = getStoredUploadContext(accountName) || getStoredUploadContext(contextAccountName);
+  const context = getStoredUploadContext(contextAccountName);
   if (!context) {
     throw new Error(
       `主账号“${contextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`,
