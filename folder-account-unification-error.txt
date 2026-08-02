@@ -1,0 +1,6 @@
+Applied folder persistence, unified account settings, secret reveal and shared routing.
+
+> quepic@0.7.0 build
+> tsc --noEmit && vite build
+
+src/App.tsx(1499,30): error TS2304: Cannot find name 'Users'.
