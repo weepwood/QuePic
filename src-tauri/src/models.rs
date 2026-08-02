@@ -13,6 +13,7 @@ pub struct AssetRecord {
     pub account_name: String,
     pub uploaded_at: String,
     pub category: String,
+    pub tags: Vec<String>,
     pub original_path: Option<String>,
     pub thumbnail_path: Option<String>,
     pub preview_source: String,
@@ -31,6 +32,8 @@ pub struct UploadInput {
     pub height: Option<i64>,
     pub account_name: String,
     pub category: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub attachable_id: i64,
     pub referer_url: String,
 }

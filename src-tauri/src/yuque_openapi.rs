@@ -28,6 +28,8 @@ pub struct SaveYuqueDocumentInput {
     pub document_url: Option<String>,
     pub title: String,
     pub body: String,
+    #[serde(default)]
+    pub ensure_in_toc: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +137,20 @@ struct YuqueDocument {
 struct YuqueBook {
     id: Option<i64>,
     namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct YuqueTocNode {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    doc_id: Option<i64>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    children: Vec<YuqueTocNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,11 +372,75 @@ pub async fn create_yuque_document(
             &merged_body,
         )
         .await?;
+        if input.ensure_in_toc {
+            ensure_document_in_toc(&client, &token, repo.id, &updated).await?;
+        }
         return Ok(document_result(updated, &namespace, false));
     }
 
     let created = create_document(&client, &token, repo.id, title, body).await?;
+    if input.ensure_in_toc {
+        ensure_document_in_toc(&client, &token, repo.id, &created).await?;
+    }
     Ok(document_result(created, &namespace, true))
+}
+
+async fn ensure_document_in_toc(
+    client: &Client,
+    token: &str,
+    repository_id: i64,
+    document: &YuqueDocument,
+) -> Result<(), String> {
+    let endpoint = format!("{YUQUE_API_BASE}/repos/{repository_id}/toc");
+    let text = request_text(
+        client
+            .get(&endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("读取语雀目录失败：{error}"))?,
+        "读取语雀目录",
+    )
+    .await?;
+    let nodes = serde_json::from_str::<YuqueApiResponse<Vec<YuqueTocNode>>>(&text)
+        .map(|payload| payload.data)
+        .map_err(|error| format!("解析语雀目录失败：{error}"))?;
+    if toc_contains_document(&nodes, document) {
+        return Ok(());
+    }
+
+    request_text(
+        client
+            .post(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .json(&json!({
+                "action": "appendNode",
+                "action_mode": "child",
+                "target_uuid": "",
+                "type": "DOC",
+                "title": document.title,
+                "doc_id": document.id,
+                "url": document.slug,
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("将语雀文档插入目录失败：{error}"))?,
+        "将语雀文档插入目录",
+    )
+    .await?;
+    Ok(())
+}
+
+fn toc_contains_document(nodes: &[YuqueTocNode], document: &YuqueDocument) -> bool {
+    nodes.iter().any(|node| {
+        node.doc_id == Some(document.id)
+            || node.id == Some(document.id)
+            || node.url.as_deref() == Some(document.slug.as_str())
+            || node.slug.as_deref() == Some(document.slug.as_str())
+            || toc_contains_document(&node.children, document)
+    })
 }
 
 async fn fetch_current_user(client: &Client, token: &str) -> Result<YuqueUser, String> {
@@ -890,8 +970,8 @@ mod tests {
 
     use super::{
         append_markdown, build_document_url, extract_error_message, openapi_default_headers,
-        parse_yuque_url, validate_account_name, validate_namespace, value_to_i64,
-        BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
+        parse_yuque_url, toc_contains_document, validate_account_name, validate_namespace,
+        value_to_i64, YuqueDocument, YuqueTocNode, BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
     };
 
     #[test]
@@ -946,6 +1026,37 @@ mod tests {
         assert_eq!(merged.matches("quepic-image:18").count(), 1);
         assert!(merged.contains("![图片18](url18)"));
         assert_eq!(append_markdown(Some(&merged), addition), merged);
+    }
+
+    #[test]
+    fn finds_document_in_nested_repository_toc() {
+        let document = YuqueDocument {
+            id: 42,
+            title: "每日图片 2026-08-02".into(),
+            slug: "daily-2026-08-02".into(),
+            format: Some("markdown".into()),
+            body: None,
+            body_draft: None,
+            book_id: Some(7),
+            book: None,
+            updated_at: None,
+            content_updated_at: None,
+            word_count: None,
+        };
+        let nodes = vec![YuqueTocNode {
+            id: None,
+            doc_id: None,
+            url: None,
+            slug: None,
+            children: vec![YuqueTocNode {
+                id: None,
+                doc_id: Some(42),
+                url: Some("daily-2026-08-02".into()),
+                slug: None,
+                children: Vec::new(),
+            }],
+        }];
+        assert!(toc_contains_document(&nodes, &document));
     }
 
     #[test]

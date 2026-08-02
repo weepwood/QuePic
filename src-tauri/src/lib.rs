@@ -164,6 +164,16 @@ fn clear_cookie(account_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(url.trim()).map_err(|_| "外部链接无效。".to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("仅允许使用系统浏览器打开 HTTP 或 HTTPS 链接。".into());
+    }
+    tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>)
+        .map_err(|error| format!("无法调用系统浏览器：{error}"))
+}
+
+#[tauri::command]
 fn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {
     let _database_guard = state.try_database_read()?;
     database::list_assets(&state.database_path)
@@ -178,6 +188,34 @@ fn update_asset_category(
     let _database_guard = state.try_database_read()?;
     let category = normalize_category(&category)?;
     database::update_asset_category(&state.database_path, id, &category)
+}
+
+#[tauri::command]
+fn list_library_folders(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let _database_guard = state.try_database_read()?;
+    database::list_library_folders(&state.database_path)
+}
+
+#[tauri::command]
+fn create_library_folder(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let _database_guard = state.try_database_read()?;
+    database::create_library_folder(&state.database_path, &name)
+}
+
+#[tauri::command]
+fn list_asset_tags(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let _database_guard = state.try_database_read()?;
+    database::list_asset_tags(&state.database_path)
+}
+
+#[tauri::command]
+fn update_asset_tags(
+    state: State<'_, AppState>,
+    id: i64,
+    tags: Vec<String>,
+) -> Result<AssetRecord, String> {
+    let _database_guard = state.try_database_read()?;
+    database::update_asset_tags(&state.database_path, id, &tags)
 }
 
 #[tauri::command]
@@ -342,7 +380,7 @@ struct SaveOriginalResult {
 }
 
 #[tauri::command]
-fn save_original_image(
+async fn save_original_image(
     app: AppHandle,
     state: State<'_, AppState>,
     asset_id: i64,
@@ -350,13 +388,11 @@ fn save_original_image(
     let _database_guard = state.try_database_read()?;
     let asset = database::find_by_id(&state.database_path, asset_id)?
         .ok_or_else(|| "图片记录不存在。".to_string())?;
-    let source = asset
-        .original_path
-        .as_deref()
-        .filter(|path| preview::original_exists(Some(path)))
-        .ok_or_else(|| "原图尚未缓存，请先打开“原图显示”，等待加载完成后再保存。".to_string())?;
+    let preview_limiter = state.preview_limiter.clone();
+    drop(state);
+
     let file_name = sanitize_file_name(&asset.file_name)?;
-    let extension = Path::new(source)
+    let extension = Path::new(&file_name)
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_string);
@@ -384,12 +420,31 @@ fn save_original_image(
             target.set_extension(extension);
         }
     }
-    if Path::new(source) != target {
-        fs::copy(source, &target).map_err(|error| format!("保存原图失败：{error}"))?;
-    }
+
+    let downloaded_bytes =
+        match remote_preview::download_preview(preview_limiter, &asset.remote_url, true).await {
+            Ok(image) => image.bytes,
+            Err(public_error) => {
+                let cookie = credentials::load(&asset.account_name)?;
+                let original_url = remote_preview::original_image_url(&asset.remote_url)?;
+                yuque::download_image(&cookie, &original_url)
+                    .await
+                    .map_err(|session_error| {
+                        format!("原图下载失败：{public_error}；语雀会话回源失败：{session_error}")
+                    })?
+                    .bytes
+            }
+        };
+    let saved_path = target.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&target, downloaded_bytes).map_err(|error| format!("保存原图失败：{error}"))
+    })
+    .await
+    .map_err(|error| format!("保存原图任务失败：{error}"))??;
+
     Ok(SaveOriginalResult {
         cancelled: false,
-        path: Some(target.to_string_lossy().into_owned()),
+        path: Some(saved_path.to_string_lossy().into_owned()),
     })
 }
 
@@ -425,6 +480,7 @@ async fn upload_image(
             database_path,
             existing,
             category,
+            input.tags.clone(),
             sha256,
             input.mime_type,
             cache_bytes,
@@ -445,6 +501,7 @@ async fn upload_image(
             database_path,
             existing,
             category,
+            input.tags.clone(),
             sha256,
             input.mime_type,
             cache_bytes,
@@ -485,6 +542,7 @@ async fn upload_image(
         account_name,
         uploaded_at: Utc::now().to_rfc3339(),
         category,
+        tags: input.tags.clone(),
         original_path: None,
         thumbnail_path: None,
         preview_source: "missing".into(),
@@ -541,11 +599,17 @@ async fn reuse_existing_asset(
     database_path: PathBuf,
     existing: AssetRecord,
     category: String,
+    tags: Vec<String>,
     sha256: String,
     mime_type: String,
     cache_bytes: Vec<u8>,
 ) -> Result<UploadResult, String> {
     let existing = database::update_asset_category(&database_path, existing.id, &category)?;
+    let existing = if tags.is_empty() {
+        existing
+    } else {
+        database::update_asset_tags(&database_path, existing.id, &tags)?
+    };
     let original_missing = {
         let _guard = cache_lock
             .lock()
@@ -854,6 +918,7 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
@@ -875,6 +940,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             save_cookie,
+            open_external_url,
             open_yuque_login,
             capture_yuque_login,
             credential_status,
@@ -888,6 +954,10 @@ pub fn run() {
             backup::import_backup,
             list_assets,
             update_asset_category,
+            list_library_folders,
+            create_library_folder,
+            list_asset_tags,
+            update_asset_tags,
             cache_stats,
             upload_quota_status,
             clear_preview_cache,

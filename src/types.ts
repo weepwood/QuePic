@@ -12,6 +12,7 @@ export interface AssetRecord {
   account_name: string;
   uploaded_at: string;
   category: string;
+  tags: string[];
   original_path: string | null;
   thumbnail_path: string | null;
   preview_source: 'local' | 'remote_url' | 'yuque_session' | 'wordpress_proxy' | 'missing' | string;
@@ -47,6 +48,7 @@ export interface UploadQueueItem {
   height: number | null;
   accountName: string;
   category: string;
+  tags: string[];
   createdAt: number;
   scheduledAt: number | null;
   status: UploadStatus;
@@ -61,6 +63,7 @@ export interface StoredUploadQueueItem {
   height: number | null;
   accountName: string;
   category: string;
+  tags: string[];
   createdAt: number;
   scheduledAt: number | null;
   status: 'waiting' | 'scheduled' | 'failed';
@@ -126,6 +129,7 @@ export interface SaveYuqueDocumentInput {
   document_url: string | null;
   title: string;
   body: string;
+  ensure_in_toc?: boolean;
 }
 
 export interface YuqueDocumentResult {

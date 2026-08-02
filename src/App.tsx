@@ -47,6 +47,7 @@ import {
   clearCookie,
   clearOpenApiToken,
   clearPreviewCache,
+  createLibraryFolder,
   deleteAsset,
   getCacheStats,
   getCredentialStatus,
@@ -55,7 +56,10 @@ import {
     getStoredUploadContext,
     listAccountProfiles,
 
+  listAssetTags,
   listAssets,
+  listLibraryFolders,
+  openExternalUrl,
   openYuqueLogin,
   saveAccountProfile,
   saveCookie,
@@ -64,6 +68,7 @@ import {
     saveStoredUploadContext,
     clearStoredUploadContext,
     updateAssetCategory,
+    updateAssetTags,
 
   uploadImage,
 } from './lib/tauri';
@@ -177,7 +182,7 @@ async function createPreview(file: File): Promise<{ previewUrl: string; width: n
   return { previewUrl, width, height };
 }
 
-async function createQueueItem(file: File, accountName: string, category: string): Promise<UploadQueueItem> {
+async function createQueueItem(file: File, accountName: string, category: string, tags: string[]): Promise<UploadQueueItem> {
   const preview = await createPreview(file);
   return {
     id: crypto.randomUUID(),
@@ -185,6 +190,7 @@ async function createQueueItem(file: File, accountName: string, category: string
     ...preview,
     accountName,
     category,
+    tags,
     createdAt: Date.now(),
     scheduledAt: null,
     status: 'waiting',
@@ -264,7 +270,12 @@ export default function App() {
   const [uploadCategory, setUploadCategory] = useState(
     () => localStorage.getItem('quepic-upload-category') || DEFAULT_CATEGORY,
   );
+  const [uploadTags, setUploadTags] = useState(() => localStorage.getItem('quepic-upload-tags') || '');
+  const [libraryFolders, setLibraryFolders] = useState<string[]>([DEFAULT_CATEGORY]);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [newFolderDraft, setNewFolderDraft] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('全部');
+  const [tagFilter, setTagFilter] = useState('全部');
   const [search, setSearch] = useState('');
   const [librarySort, setLibrarySort] = useState<LibrarySort>('newest');
   const [selected, setSelected] = useState<AssetRecord | null>(null);
@@ -274,6 +285,7 @@ export default function App() {
   );
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [categoryDraft, setCategoryDraft] = useState(DEFAULT_CATEGORY);
+  const [tagDraft, setTagDraft] = useState('');
   const [bulkCategory, setBulkCategory] = useState(DEFAULT_CATEGORY);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -309,6 +321,16 @@ export default function App() {
         ? nextAssets.find((asset) => asset.id === current.id) || null
         : null);
       setSelectedAssetIds((current) => new Set([...current].filter((id) => nextAssets.some((asset) => asset.id === id))));
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    }
+  }, [showToast]);
+
+  const refreshTaxonomy = useCallback(async () => {
+    try {
+      const [folders, tags] = await Promise.all([listLibraryFolders(), listAssetTags()]);
+      setLibraryFolders(folders.length ? folders : [DEFAULT_CATEGORY]);
+      setAvailableTags(tags);
     } catch (error) {
       showToast('error', normalizeError(error));
     }
@@ -351,10 +373,11 @@ export default function App() {
     await Promise.all([
       refreshAssets(),
       refreshCacheStats(),
+      refreshTaxonomy(),
       refreshAccountStatus(targetAccount),
     ]);
     if (requestId !== contextRequestRef.current) return;
-  }, [refreshAccountStatus, refreshAssets, refreshCacheStats]);
+  }, [refreshAccountStatus, refreshAssets, refreshCacheStats, refreshTaxonomy]);
 
   const handleSwitchAccount = useCallback(async (rawAccount: string) => {
     const nextAccount = rawAccount.trim() || DEFAULT_ACCOUNT;
@@ -430,6 +453,7 @@ export default function App() {
   useEffect(() => {
     if (!selected) return undefined;
     setCategoryDraft(selected.category || DEFAULT_CATEGORY);
+    setTagDraft((selected.tags || []).join(', '));
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setSelected(null);
     };
@@ -443,9 +467,9 @@ export default function App() {
   }, []);
 
   const categories = useMemo(() => {
-    const values = new Set<string>(assets.map((asset) => asset.category || DEFAULT_CATEGORY));
-    return Array.from(values).sort((left, right) => left.localeCompare(right, 'zh-CN'));
-  }, [assets]);
+    const values = new Set<string>([DEFAULT_CATEGORY, ...libraryFolders, ...assets.map((asset) => asset.category || DEFAULT_CATEGORY)]);
+    return Array.from(values).sort((left, right) => left === DEFAULT_CATEGORY ? -1 : right === DEFAULT_CATEGORY ? 1 : left.localeCompare(right, 'zh-CN'));
+  }, [assets, libraryFolders]);
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -457,9 +481,10 @@ export default function App() {
     const keyword = search.trim().toLowerCase();
     const filtered = assets.filter((asset) => {
       const categoryMatches = categoryFilter === '全部' || asset.category === categoryFilter;
-      if (!categoryMatches) return false;
+      const tagMatches = tagFilter === '全部' || (asset.tags || []).includes(tagFilter);
+      if (!categoryMatches || !tagMatches) return false;
       if (!keyword) return true;
-      return [asset.file_name, asset.remote_url, asset.mime_type, asset.account_name, asset.category]
+      return [asset.file_name, asset.remote_url, asset.mime_type, asset.account_name, asset.category, ...(asset.tags || [])]
         .some((value) => value.toLowerCase().includes(keyword));
     });
     return [...filtered].sort((left, right) => {
@@ -469,7 +494,7 @@ export default function App() {
       if (librarySort === 'category') return left.category.localeCompare(right.category, 'zh-CN') || left.file_name.localeCompare(right.file_name, 'zh-CN', { numeric: true });
       return Date.parse(right.uploaded_at) - Date.parse(left.uploaded_at);
     });
-  }, [assets, categoryFilter, librarySort, search]);
+  }, [assets, categoryFilter, librarySort, search, tagFilter]);
 
   const activeQueue = useMemo(
     () => queue.filter((item) => item.accountName === accountName),
@@ -630,11 +655,13 @@ export default function App() {
     if (accepted.length === 0) return;
     const account = activeAccountRef.current;
     const category = uploadCategory.trim() || DEFAULT_CATEGORY;
+    const tags = parseTags(uploadTags);
     localStorage.setItem('quepic-upload-category', category);
+    localStorage.setItem('quepic-upload-tags', uploadTags);
     const items = await mapWithConcurrency(
       accepted,
       QUEUE_PREVIEW_CONCURRENCY,
-      (file) => createQueueItem(file, account, category),
+      (file) => createQueueItem(file, account, category, tags),
     );
     commitQueue((current) => [...items, ...current]);
     try {
@@ -685,7 +712,7 @@ export default function App() {
 
     markQueueItem(id, { status: 'uploading', scheduledAt: null, error: undefined });
     try {
-      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);
+      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category, item.tags || []);
       markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
       await removeStoredQueueItem(id);
       if (!deferRefresh) {
@@ -1045,6 +1072,38 @@ export default function App() {
     }
   };
 
+  const handleCreateFolder = async () => {
+    const name = newFolderDraft.trim();
+    if (!name) return;
+    setLibraryBusy(true);
+    try {
+      const created = await createLibraryFolder(name);
+      setNewFolderDraft('');
+      setUploadCategory(created);
+      await refreshTaxonomy();
+      showToast('success', `已创建文件夹“${created}”。`);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
+  const handleSaveTags = async () => {
+    if (!selected) return;
+    setLibraryBusy(true);
+    try {
+      const updated = await updateAssetTags(selected.id, parseTags(tagDraft));
+      setSelected(updated);
+      await Promise.all([refreshAssets(), refreshTaxonomy()]);
+      showToast('success', '图片标签已保存。');
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
   const handleBulkDelete = async () => {
     const ids = [...selectedAssetIds];
     if (ids.length === 0) return;
@@ -1142,11 +1201,20 @@ export default function App() {
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
                 <p>图片加入队列时绑定上传账号和分类；上传完成后统一进入共享图库，切换账号不会隐藏已有图片。</p>
-                <label className="upload-category-field">
-                  <Tags size={16} />
-                  <input value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
-                </label>
+                <div className="upload-organization-fields">
+                  <label className="upload-category-field">
+                    <FolderUp size={16} />
+                    <select value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)}>
+                      {categories.map((category) => <option value={category} key={category}>{category}</option>)}
+                    </select>
+                  </label>
+                  <label className="upload-category-field">
+                    <Tags size={16} />
+                    <input value={uploadTags} onChange={(event) => setUploadTags(event.target.value)} placeholder="标签，用逗号分隔" list="tag-options" />
+                  </label>
+                </div>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
+                <datalist id="tag-options">{availableTags.map((tag) => <option value={tag} key={tag} />)}</datalist>
                 <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>140 张/小时</span><span>额度内连续上传</span><span>队列持久化</span></div>
                 <div className="actions">
                   <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
@@ -1207,6 +1275,19 @@ export default function App() {
 
           {view === 'library' && (
             <div className="library-layout">
+              <aside className="library-taxonomy">
+                <div className="taxonomy-section">
+                  <div className="taxonomy-title"><FolderUp size={15} /><strong>文件夹</strong></div>
+                  <button className={categoryFilter === '全部' ? 'active' : ''} onClick={() => setCategoryFilter('全部')}><span>全部图片</span><em>{assets.length}</em></button>
+                  {categories.map((category) => <button key={category} className={categoryFilter === category ? 'active' : ''} onClick={() => setCategoryFilter(category)}><span>{category}</span><em>{categoryCounts.get(category) || 0}</em></button>)}
+                  <div className="taxonomy-create"><input value={newFolderDraft} onChange={(event) => setNewFolderDraft(event.target.value)} placeholder="新建文件夹" /><button disabled={libraryBusy || !newFolderDraft.trim()} onClick={() => void handleCreateFolder()}><Plus size={14} /></button></div>
+                </div>
+                <div className="taxonomy-section">
+                  <div className="taxonomy-title"><Tags size={15} /><strong>标签</strong></div>
+                  <button className={tagFilter === '全部' ? 'active' : ''} onClick={() => setTagFilter('全部')}><span>全部标签</span></button>
+                  {availableTags.map((tag) => <button key={tag} className={tagFilter === tag ? 'active' : ''} onClick={() => setTagFilter(tag)}><span>#{tag}</span></button>)}
+                </div>
+              </aside>
               <div className={libraryViewMode === 'original' ? 'library-main original-ratio-view' : 'library-main square-view'}>
                 <div className="library-heading">
                   <div><span>SHARED LOCAL FIRST ASSET INDEX</span><h2>共享图片内容管理</h2><p>所有账号使用同一个图库；账号切换只改变上传身份，不改变这里的内容。</p></div>
@@ -1219,7 +1300,7 @@ export default function App() {
                     <label className="library-sort"><ArrowUpDown size={16} /><select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}><option value="newest">最新上传</option><option value="oldest">最早上传</option><option value="name">文件名</option><option value="size">文件大小</option><option value="category">分类</option></select></label>
                   </div>
                 </div>
-                <div className="category-filter">
+                <div className="category-filter legacy-category-filter">
                   <button className={categoryFilter === '全部' ? 'active' : ''} onClick={() => setCategoryFilter('全部')}>全部 {assets.length}</button>
                   {categories.map((category) => (
                     <button key={category} className={categoryFilter === category ? 'active' : ''} onClick={() => setCategoryFilter(category)}>{category} {categoryCounts.get(category) || 0}</button>
@@ -1243,7 +1324,7 @@ export default function App() {
                   <button className="bulk-delete" disabled={libraryBusy || selectedAssetIds.size === 0} onClick={() => void handleBulkDelete()}>{libraryBusy ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}删除本地记录</button>
                 </div>
                 {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : (
-                  <div className="asset-grid">
+                  <div className={`asset-grid ${libraryViewMode}`}>
                     {filteredAssets.map((asset) => {
                       const checked = selectedAssetIds.has(asset.id);
                       return (
@@ -1264,6 +1345,7 @@ export default function App() {
                           <div className="asset-card-body">
                             <strong>{asset.file_name}</strong>
                             <span className="asset-category-tag">{asset.category || DEFAULT_CATEGORY}</span>
+                            {(asset.tags || []).length > 0 && <span className="asset-tag-summary">#{asset.tags.slice(0, 2).join(' #')}</span>}
                             <span className={asset.cache_status === 'ready' ? 'asset-cache-state ready' : 'asset-cache-state'}>{asset.cache_status === 'ready' ? '已缓存' : '按需缓存'}</span>
                             <small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)} · 来源：{asset.account_name}</small>
                           </div>
@@ -1282,7 +1364,8 @@ export default function App() {
                     <div className="detail-body">
                       <span>IMAGE DETAILS</span><h3>{selected.file_name}</h3>
                       <dl>
-                        <div><dt>分类</dt><dd>{selected.category}</dd></div>
+                        <div><dt>文件夹</dt><dd>{selected.category}</dd></div>
+                        <div><dt>标签</dt><dd>{selected.tags?.length ? selected.tags.map((tag) => `#${tag}`).join(' ') : '无'}</dd></div>
                         <div><dt>来源账号</dt><dd>{selected.account_name}</dd></div>
                         <div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div>
                         <div><dt>格式</dt><dd>{selected.mime_type}</dd></div>
@@ -1290,12 +1373,14 @@ export default function App() {
                         <div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div>
                         <div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div>
                       </dl>
-                      <label className="field detail-category-field"><span>图片分类</span><input value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} list="category-options" placeholder="未分类" /></label>
-                      <button className="button primary" onClick={() => void handleSaveCategory()}><Save size={16} />保存分类</button>
+                      <label className="field detail-category-field"><span>所属文件夹</span><select value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)}>{categories.map((category) => <option value={category} key={category}>{category}</option>)}</select></label>
+                      <button className="button primary" disabled={libraryBusy} onClick={() => void handleSaveCategory()}><Save size={16} />保存文件夹</button>
+                      <label className="field detail-category-field"><span>图片标签</span><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="标签，用逗号分隔" list="tag-options" /></label>
+                      <button className="button secondary" disabled={libraryBusy} onClick={() => void handleSaveTags()}><Tags size={16} />保存标签</button>
                       <button className="button secondary" onClick={() => setOriginalViewerAsset(selected)}><Maximize2 size={16} />原图显示</button>
                       <button className="button secondary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button>
                       <button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button>
-                      <button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开（可能下载）</button>
+                      <button className="button secondary" onClick={() => void openExternalUrl(selected.remote_url).catch((error) => showToast('error', normalizeError(error)))}><ExternalLink size={16} />使用系统浏览器打开</button>
                       <button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button>
                       <p>删除操作不会删除语雀服务器上的远程图片。</p>
                     </div>
@@ -1420,6 +1505,10 @@ function resolveRetryTimestamp(value: string | null): number {
 
 function formatScheduleTime(value: number): string {
   return new Date(value).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function parseTags(value: string): string[] {
+  return Array.from(new Set(value.split(/[,，;；\n]/).map((item) => item.trim()).filter(Boolean))).slice(0, 20);
 }
 
 function normalizeError(error: unknown) {
