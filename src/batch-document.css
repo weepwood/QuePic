@@ -51,8 +51,49 @@
   color: #168f4d;
 }
 
-.batch-doc-book-field {
-  max-width: 520px;
+.batch-doc-target-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.batch-doc-target-grid .field {
+  min-width: 0;
+}
+
+.batch-doc-target-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px 13px;
+  border: 1px solid #b7eb8f;
+  border-radius: 6px;
+  color: #168f4d;
+  background: #f6ffed;
+}
+
+.batch-doc-target-preview.error {
+  border-color: #ffccc7;
+  color: #cf1322;
+  background: #fff2f0;
+}
+
+.batch-doc-target-preview > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.batch-doc-target-preview strong,
+.batch-doc-target-preview small {
+  overflow-wrap: anywhere;
+}
+
+.batch-doc-target-preview small {
+  color: inherit;
+  opacity: 0.78;
 }
 
 .batch-doc-folder-card {
@@ -219,7 +260,8 @@
 }
 
 @media (max-width: 760px) {
-  .batch-doc-status-grid {
+  .batch-doc-status-grid,
+  .batch-doc-target-grid {
     grid-template-columns: 1fr;
   }
 
