@@ -38,6 +38,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_account_profiles(state: State<'_, AppState>) -> Result<Vec<AccountProfile>, String> {
+    let _database_guard = state.try_database_read()?;
     let names = account_names(&state.database_path)?;
     names
         .into_iter()
@@ -50,6 +51,7 @@ pub fn save_account_profile(
     state: State<'_, AppState>,
     account_name: String,
 ) -> Result<AccountProfile, String> {
+    let _database_guard = state.try_database_read()?;
     let account_name = normalize_account_name(&account_name)?;
     let connection = open_connection(&state.database_path)?;
     upsert_name(&connection, &account_name)?;
@@ -62,7 +64,9 @@ pub fn import_account_names(path: &Path, account_names: &[String]) -> Result<(),
         .map(|account_name| normalize_account_name(account_name))
         .collect::<Result<Vec<_>, _>>()?;
     let mut connection = open_connection(path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
     for account_name in normalized {
         upsert_name(&transaction, &account_name)?;
     }
@@ -115,7 +119,8 @@ fn profile(path: &Path, account_name: &str) -> Result<AccountProfile, String> {
         .map_err(|error| error.to_string())?;
 
     let credential_configured = credentials::configured(account_name)?;
-    let token_configured = openapi_token::openapi_token_status(account_name.to_string())?.configured;
+    let token_configured =
+        openapi_token::openapi_token_status(account_name.to_string())?.configured;
 
     Ok(AccountProfile {
         account_name: account_name.to_string(),
@@ -171,7 +176,10 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
 mod tests {
     use super::{account_names, import_account_names, initialize};
     use crate::database;
-    use std::{path::Path, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn temporary_database(label: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -204,7 +212,9 @@ mod tests {
         initialize_database(&path);
         let result = import_account_names(&path, &["有效账号".into(), "无效\n账号".into()]);
         assert!(result.is_err());
-        assert!(!account_names(&path).unwrap().contains(&"有效账号".to_string()));
+        assert!(!account_names(&path)
+            .unwrap()
+            .contains(&"有效账号".to_string()));
         let _ = std::fs::remove_file(path);
     }
 }

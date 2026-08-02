@@ -90,14 +90,16 @@ pub async fn export_backup(
         target.set_extension("quepic-backup");
     }
 
-    settings.account_names = accounts::account_names(&state.database_path)?;
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
     let upload_gate = state.upload_gate.clone();
+    let database_gate = state.database_gate.clone();
     drop(state);
 
+    let _database_guard = database_gate.write_owned().await;
     let _upload_guard = upload_gate.lock().await;
+    settings.account_names = accounts::account_names(&database_path)?;
     let exported_path = tauri::async_runtime::spawn_blocking(move || {
         let _cache_guard = cache_lock
             .lock()
@@ -154,8 +156,10 @@ pub async fn import_backup(
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
     let upload_gate = state.upload_gate.clone();
+    let database_gate = state.database_gate.clone();
     drop(state);
 
+    let _database_guard = database_gate.write_owned().await;
     let _upload_guard = upload_gate.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let _cache_guard = cache_lock
@@ -256,6 +260,13 @@ fn restore_backup_archive(
     let settings: PortableSettings = read_json(&mut archive, "settings.json")?;
     if !restore_library {
         accounts::import_account_names(database_path, &settings.account_names)?;
+        return Ok(ImportResult {
+            cancelled: false,
+            settings: Some(settings),
+            restored_library: false,
+            restored_cache: false,
+            restored_cache_files: 0,
+        });
     }
 
     let temporary_root = temporary_directory("quepic-import")?;
@@ -331,6 +342,28 @@ fn snapshot_database(source: &Path, target: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法创建数据库快照：{error}"))
 }
 
+fn checkpoint_database(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let connection =
+        Connection::open(path).map_err(|error| format!("无法打开当前数据库：{error}"))?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| format!("无法设置数据库等待时间：{error}"))?;
+    let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|error| format!("无法合并当前数据库 WAL：{error}"))?;
+    if busy != 0 {
+        return Err(format!(
+            "当前数据库仍被占用，无法安全恢复备份（WAL {checkpointed_frames}/{log_frames}）。"
+        ));
+    }
+    Ok(())
+}
+
 fn restore_library_transaction(
     database_path: &Path,
     imported_database: &Path,
@@ -339,6 +372,7 @@ fn restore_library_transaction(
     account_names: &[String],
 ) -> Result<(), String> {
     validate_database(imported_database)?;
+    checkpoint_database(database_path)?;
 
     let staged_database = temporary_sibling(database_path, "restore");
     let staged_cache = temporary_sibling(preview_cache_dir, "restore");
@@ -769,6 +803,47 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("cookie"));
         assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn settings_only_restore_commits_accounts_after_preflight() {
+        let root = temporary_directory("quepic-settings-restore-test").unwrap();
+        let database_path = root.join("quepic.db");
+        let archive_path = root.join("settings.quepic-backup");
+        let cache_path = root.join("previews");
+        database::initialize(&database_path).unwrap();
+        accounts::initialize(&database_path).unwrap();
+        fs::create_dir_all(&cache_path).unwrap();
+
+        let output = File::create(&archive_path).unwrap();
+        let mut archive = ZipWriter::new(output);
+        let manifest = BackupManifest {
+            format_version: BACKUP_FORMAT_VERSION,
+            created_at: Utc::now().to_rfc3339(),
+            includes_library: false,
+            includes_cache: false,
+            credentials_included: false,
+        };
+        let settings = PortableSettings {
+            active_account: "工作".into(),
+            allow_wordpress_fallback: false,
+            upload_category: "未分类".into(),
+            book_id: String::new(),
+            account_names: vec!["工作".into()],
+        };
+        write_json(&mut archive, "manifest.json", &manifest).unwrap();
+        write_json(&mut archive, "settings.json", &settings).unwrap();
+        archive.finish().unwrap();
+
+        let result =
+            restore_backup_archive(&archive_path, &database_path, &cache_path, false, false)
+                .unwrap();
+        assert!(!result.restored_library);
+        assert!(accounts::account_names(&database_path)
+            .unwrap()
+            .contains(&"工作".to_string()));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
