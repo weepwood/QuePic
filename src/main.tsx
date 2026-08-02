@@ -7,6 +7,7 @@ import './preview.css';
 import './yuque-theme.css';
 import './batch-document.css';
 import './feature-enhancements.css';
+import './queue-library.css';
 import './account-backup.css';
 
 createRoot(document.getElementById('root')!).render(

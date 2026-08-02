@@ -1,7 +1,10 @@
 import {
   AlertTriangle,
+  ArrowUpDown,
+  CalendarClock,
   Check,
   CheckCircle2,
+  CheckSquare,
   Clipboard,
   CloudUpload,
   Copy,
@@ -14,16 +17,20 @@ import {
   HardDrive,
   Images,
   KeyRound,
+  ListChecks,
   LoaderCircle,
   LogIn,
+  Plus,
   Save,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
+  Square,
   Tags,
   Trash2,
   UploadCloud,
+  UserRound,
   X,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -41,16 +48,27 @@ import {
   getCredentialStatus,
   getOpenApiTokenStatus,
   getUploadQuotaStatus,
+  listAccountProfiles,
   listAssets,
   openYuqueLogin,
+  saveAccountProfile,
   saveCookie,
   saveOpenApiToken,
   updateAssetCategory,
   uploadImage,
 } from './lib/tauri';
+import {
+  listStoredQueueItems,
+  removeStoredQueueItem,
+  saveStoredQueueItem,
+  saveStoredQueueItems,
+  toStoredQueueItem,
+} from './lib/uploadQueueStore';
 import type {
+  AccountProfile,
   AssetRecord,
   CacheStats,
+  StoredUploadQueueItem,
   UploadQueueItem,
   UploadQuotaStatus,
   ViewKey,
@@ -62,7 +80,10 @@ const EMPTY_CACHE_STATS: CacheStats = { asset_count: 0, cached_count: 0, cache_b
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const QUEUE_PREVIEW_EDGE = 160;
 const QUEUE_PREVIEW_CONCURRENCY = 3;
+const AUTO_UPLOAD_DELAY_MS = 60 * 60 * 1000;
 const IMAGE_EXTENSION = /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
+
+type LibrarySort = 'newest' | 'oldest' | 'name' | 'size' | 'category';
 
 interface QueueItemRowProps {
   item: UploadQueueItem;
@@ -73,11 +94,18 @@ interface QueueItemRowProps {
 
 const QueueItemRow = memo(function QueueItemRow({ item, onRetry, onCopy, onRemove }: QueueItemRowProps) {
   return (
-    <article className="queue-item">
+    <article className={item.status === 'scheduled' ? 'queue-item scheduled' : 'queue-item'}>
       <img src={item.previewUrl} alt="" loading="lazy" decoding="async" draggable={false} />
       <div>
         <strong>{item.file.name}</strong>
-        <small>{formatBytes(item.file.size)}{item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}</small>
+        <small>
+          {formatBytes(item.file.size)}
+          {item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}
+          {` · ${item.category}`}
+        </small>
+        {item.status === 'scheduled' && item.scheduledAt && (
+          <b className="scheduled-text"><CalendarClock size={13} />{formatScheduleTime(item.scheduledAt)} 自动上传</b>
+        )}
         {item.status === 'failed' && <b className="error-text">{item.error}</b>}
         {item.status === 'success' && (
           <b className="success-text">
@@ -88,19 +116,19 @@ const QueueItemRow = memo(function QueueItemRow({ item, onRetry, onCopy, onRemov
       </div>
       <div className="item-actions">
         {item.status === 'uploading' && <LoaderCircle className="spin" size={18} />}
-        {item.status === 'failed' && <button onClick={() => onRetry(item.id)}>重试</button>}
+        {(item.status === 'failed' || item.status === 'scheduled') && <button onClick={() => onRetry(item.id)}>立即上传</button>}
         {item.status === 'success' && item.result && (
           <button title="复制 Markdown" onClick={() => onCopy(`![${item.file.name}](${item.result?.asset.remote_url})`)}>
             <Copy size={15} />
           </button>
         )}
-        <button title="移除" onClick={() => onRemove(item.id)}><X size={15} /></button>
+        <button title="移除" disabled={item.status === 'uploading'} onClick={() => onRemove(item.id)}><X size={15} /></button>
       </div>
     </article>
   );
 });
 
-async function createQueueItem(file: File): Promise<UploadQueueItem> {
+async function createPreview(file: File): Promise<{ previewUrl: string; width: number | null; height: number | null }> {
   let width: number | null = null;
   let height: number | null = null;
   let previewUrl = '';
@@ -131,14 +159,26 @@ async function createQueueItem(file: File): Promise<UploadQueueItem> {
     bitmap?.close();
   }
 
+  return { previewUrl, width, height };
+}
+
+async function createQueueItem(file: File, accountName: string, category: string): Promise<UploadQueueItem> {
+  const preview = await createPreview(file);
   return {
     id: crypto.randomUUID(),
     file,
-    previewUrl,
-    width,
-    height,
+    ...preview,
+    accountName,
+    category,
+    createdAt: Date.now(),
+    scheduledAt: null,
     status: 'waiting',
   };
+}
+
+async function hydrateQueueItem(item: StoredUploadQueueItem): Promise<UploadQueueItem> {
+  const preview = await createPreview(item.file);
+  return { ...item, ...preview };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -164,11 +204,19 @@ function isImageFile(file: File): boolean {
 }
 
 export default function App() {
+  const initialAccount = localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
   const [view, setView] = useState<ViewKey>('upload');
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const queueRef = useRef<UploadQueueItem[]>([]);
-  const [accountName, setAccountName] = useState(() => localStorage.getItem('quepic-account') || DEFAULT_ACCOUNT);
+  const activeAccountRef = useRef(initialAccount);
+  const contextRequestRef = useRef(0);
+  const autoUploadRunningRef = useRef(false);
+  const [queueReady, setQueueReady] = useState(false);
+  const [accountName, setAccountName] = useState(initialAccount);
+  const [accountDraft, setAccountDraft] = useState(initialAccount);
+  const [accountProfiles, setAccountProfiles] = useState<AccountProfile[]>([]);
+  const [accountSwitching, setAccountSwitching] = useState(false);
   const [credentialReady, setCredentialReady] = useState(false);
   const [tokenReady, setTokenReady] = useState(false);
   const [cookieInput, setCookieInput] = useState('');
@@ -187,61 +235,122 @@ export default function App() {
   );
   const [categoryFilter, setCategoryFilter] = useState('全部');
   const [search, setSearch] = useState('');
+  const [librarySort, setLibrarySort] = useState<LibrarySort>('newest');
   const [selected, setSelected] = useState<AssetRecord | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [categoryDraft, setCategoryDraft] = useState(DEFAULT_CATEGORY);
+  const [bulkCategory, setBulkCategory] = useState(DEFAULT_CATEGORY);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewRefreshTimerRef = useRef<number | null>(null);
 
-  const cachePercent = cacheStats.asset_count > 0
-    ? Math.round((cacheStats.cached_count / cacheStats.asset_count) * 100)
-    : 0;
-  const pendingUploadCount = queue.filter((item) => item.status === 'waiting' || item.status === 'failed').length;
-  const quotaAvailable = !quota || quota.remaining > 0;
+  const commitQueue = useCallback((updater: (current: UploadQueueItem[]) => UploadQueueItem[]) => {
+    setQueue((current) => {
+      const next = updater(current);
+      queueRef.current = next;
+      return next;
+    });
+  }, []);
 
   const showToast = useCallback((type: 'success' | 'error', text: string) => {
     setToast({ type, text });
     window.setTimeout(() => setToast(null), 4200);
   }, []);
 
-  const refreshCacheStats = useCallback(async () => {
+  const refreshProfiles = useCallback(async () => {
     try {
-      setCacheStats(await getCacheStats());
+      setAccountProfiles(await listAccountProfiles());
     } catch (error) {
       showToast('error', normalizeError(error));
     }
   }, [showToast]);
 
-  const refreshAssets = useCallback(async () => {
+  const refreshAssets = useCallback(async (targetAccount = activeAccountRef.current) => {
     try {
-      const nextAssets = await listAssets();
+      const nextAssets = await listAssets(targetAccount);
+      if (activeAccountRef.current !== targetAccount) return;
       setAssets(nextAssets);
       setSelected((current) => current
         ? nextAssets.find((asset) => asset.id === current.id) || null
         : null);
+      setSelectedAssetIds((current) => new Set([...current].filter((id) => nextAssets.some((asset) => asset.id === id))));
     } catch (error) {
       showToast('error', normalizeError(error));
     }
   }, [showToast]);
 
-  const refreshAccountStatus = useCallback(async () => {
-    const account = accountName.trim();
-    if (!account) return;
+  const refreshCacheStats = useCallback(async (targetAccount = activeAccountRef.current) => {
+    try {
+      const nextStats = await getCacheStats(targetAccount);
+      if (activeAccountRef.current === targetAccount) setCacheStats(nextStats);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    }
+  }, [showToast]);
+
+  const refreshAccountStatus = useCallback(async (targetAccount = activeAccountRef.current) => {
     try {
       const [credential, token, nextQuota] = await Promise.all([
-        getCredentialStatus(account),
-        getOpenApiTokenStatus(account),
-        getUploadQuotaStatus(account),
+        getCredentialStatus(targetAccount),
+        getOpenApiTokenStatus(targetAccount),
+        getUploadQuotaStatus(targetAccount),
       ]);
+      if (activeAccountRef.current !== targetAccount) return;
       setCredentialReady(credential.configured);
       setTokenReady(token.configured);
       setQuota(nextQuota);
     } catch (error) {
-      setCredentialReady(false);
-      setTokenReady(false);
+      if (activeAccountRef.current === targetAccount) {
+        setCredentialReady(false);
+        setTokenReady(false);
+        setQuota(null);
+      }
       showToast('error', normalizeError(error));
     }
-  }, [accountName, showToast]);
+  }, [showToast]);
+
+  const loadAccountContext = useCallback(async (targetAccount: string) => {
+    const requestId = ++contextRequestRef.current;
+    setAssets([]);
+    setCacheStats(EMPTY_CACHE_STATS);
+    setQuota(null);
+    setCredentialReady(false);
+    setTokenReady(false);
+    await Promise.all([
+      refreshAssets(targetAccount),
+      refreshCacheStats(targetAccount),
+      refreshAccountStatus(targetAccount),
+    ]);
+    if (requestId !== contextRequestRef.current) return;
+  }, [refreshAccountStatus, refreshAssets, refreshCacheStats]);
+
+  const handleSwitchAccount = useCallback(async (rawAccount: string) => {
+    const nextAccount = rawAccount.trim() || DEFAULT_ACCOUNT;
+    if (nextAccount === activeAccountRef.current) {
+      setAccountDraft(nextAccount);
+      await loadAccountContext(nextAccount);
+      return;
+    }
+    setAccountSwitching(true);
+    try {
+      await saveAccountProfile(nextAccount);
+      activeAccountRef.current = nextAccount;
+      localStorage.setItem('quepic-account', nextAccount);
+      setAccountName(nextAccount);
+      setAccountDraft(nextAccount);
+      setSelected(null);
+      setSelectedAssetIds(new Set());
+      setCategoryFilter('全部');
+      setSearch('');
+      await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);
+      showToast('success', `已切换到账号“${nextAccount}”，上传与图片库上下文已同步。`);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    } finally {
+      setAccountSwitching(false);
+    }
+  }, [loadAccountContext, refreshProfiles, showToast]);
 
   const handlePreviewCached = useCallback(() => {
     if (previewRefreshTimerRef.current !== null) window.clearTimeout(previewRefreshTimerRef.current);
@@ -252,8 +361,34 @@ export default function App() {
   }, [refreshAssets, refreshCacheStats]);
 
   useEffect(() => {
-    void Promise.all([refreshAssets(), refreshAccountStatus(), refreshCacheStats()]);
-  }, [refreshAssets, refreshAccountStatus, refreshCacheStats]);
+    void Promise.all([refreshProfiles(), loadAccountContext(initialAccount)]);
+  }, [initialAccount, loadAccountContext, refreshProfiles]);
+
+  useEffect(() => {
+    let disposed = false;
+    void listStoredQueueItems()
+      .then((stored) => mapWithConcurrency(stored, QUEUE_PREVIEW_CONCURRENCY, hydrateQueueItem))
+      .then((restored) => {
+        if (disposed) {
+          restored.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+          return;
+        }
+        commitQueue((current) => {
+          const currentIds = new Set(current.map((item) => item.id));
+          return [...restored.filter((item) => !currentIds.has(item.id)), ...current];
+        });
+        setQueueReady(true);
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setQueueReady(true);
+          showToast('error', `恢复上传队列失败：${normalizeError(error)}`);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [commitQueue, showToast]);
 
   useEffect(() => {
     queueRef.current = queue;
@@ -275,44 +410,61 @@ export default function App() {
   }, []);
 
   const categories = useMemo(() => {
-    const values = new Set(assets.map((asset) => asset.category || DEFAULT_CATEGORY));
+    const values = new Set<string>(assets.map((asset) => asset.category || DEFAULT_CATEGORY));
     return Array.from(values).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  }, [assets]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const asset of assets) counts.set(asset.category || DEFAULT_CATEGORY, (counts.get(asset.category || DEFAULT_CATEGORY) || 0) + 1);
+    return counts;
   }, [assets]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    return assets.filter((asset) => {
+    const filtered = assets.filter((asset) => {
       const categoryMatches = categoryFilter === '全部' || asset.category === categoryFilter;
       if (!categoryMatches) return false;
       if (!keyword) return true;
       return [asset.file_name, asset.remote_url, asset.mime_type, asset.account_name, asset.category]
         .some((value) => value.toLowerCase().includes(keyword));
     });
-  }, [assets, categoryFilter, search]);
+    return [...filtered].sort((left, right) => {
+      if (librarySort === 'oldest') return Date.parse(left.uploaded_at) - Date.parse(right.uploaded_at);
+      if (librarySort === 'name') return left.file_name.localeCompare(right.file_name, 'zh-CN', { numeric: true });
+      if (librarySort === 'size') return right.file_size - left.file_size;
+      if (librarySort === 'category') return left.category.localeCompare(right.category, 'zh-CN') || left.file_name.localeCompare(right.file_name, 'zh-CN', { numeric: true });
+      return Date.parse(right.uploaded_at) - Date.parse(left.uploaded_at);
+    });
+  }, [assets, categoryFilter, librarySort, search]);
 
-  const persistAccount = () => {
-    const value = accountName.trim();
-    if (value) localStorage.setItem('quepic-account', value);
+  const activeQueue = useMemo(
+    () => queue.filter((item) => item.accountName === accountName),
+    [accountName, queue],
+  );
+  const pendingUploadCount = activeQueue.filter((item) => ['waiting', 'failed', 'scheduled'].includes(item.status)).length;
+  const scheduledUploadCount = activeQueue.filter((item) => item.status === 'scheduled').length;
+  const nextScheduledAt = activeQueue
+    .filter((item) => item.status === 'scheduled' && item.scheduledAt)
+    .reduce<number | null>((earliest, item) => earliest === null ? item.scheduledAt : Math.min(earliest, item.scheduledAt || earliest), null);
+  const quotaAvailable = !quota || quota.remaining > 0;
+  const cachePercent = cacheStats.asset_count > 0
+    ? Math.round((cacheStats.cached_count / cacheStats.asset_count) * 100)
+    : 0;
+
+  const persistAccount = async () => {
+    const value = accountName.trim() || DEFAULT_ACCOUNT;
+    await saveAccountProfile(value);
+    localStorage.setItem('quepic-account', value);
+    await refreshProfiles();
     return value;
-  };
-
-  const handleAccountNameBlur = () => {
-    const previous = localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
-    const next = accountName.trim() || DEFAULT_ACCOUNT;
-    setAccountName(next);
-    localStorage.setItem('quepic-account', next);
-    if (next !== previous) {
-      window.location.reload();
-      return;
-    }
-    void refreshAccountStatus();
   };
 
   const handleOpenYuqueLogin = async () => {
     if (!accountName.trim()) return showToast('error', '请先填写账号名称。');
     setLoginBusy(true);
     try {
-      persistAccount();
+      await persistAccount();
       await openYuqueLogin();
       showToast('success', '已打开语雀登录窗口。完成登录后返回这里保存会话。');
     } catch (error) {
@@ -323,12 +475,11 @@ export default function App() {
   };
 
   const handleCaptureYuqueLogin = async () => {
-    const account = persistAccount();
-    if (!account) return showToast('error', '请先填写账号名称。');
     setLoginBusy(true);
     try {
+      const account = await persistAccount();
       await captureYuqueLogin(account);
-      setCredentialReady(true);
+      await Promise.all([refreshAccountStatus(account), refreshProfiles()]);
       showToast('success', '语雀登录会话已安全保存。');
     } catch (error) {
       showToast('error', normalizeError(error));
@@ -338,13 +489,13 @@ export default function App() {
   };
 
   const handleManualCookieSave = async () => {
-    const account = persistAccount();
-    if (!account || !cookieInput.trim()) return;
+    if (!cookieInput.trim()) return;
     setLoginBusy(true);
     try {
+      const account = await persistAccount();
       await saveCookie(account, cookieInput.trim());
       setCookieInput('');
-      setCredentialReady(true);
+      await Promise.all([refreshAccountStatus(account), refreshProfiles()]);
       showToast('success', 'Cookie 已分片保存到系统密钥库。');
     } catch (error) {
       showToast('error', normalizeError(error));
@@ -354,25 +505,23 @@ export default function App() {
   };
 
   const handleClearCredential = async () => {
-    const account = accountName.trim();
-    if (!account) return;
     try {
-      await clearCookie(account);
-      setCredentialReady(false);
-      showToast('success', '已清除 QuePic 保存的语雀登录凭据。');
+      await clearCookie(accountName);
+      await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
+      showToast('success', '已清除当前账号的语雀登录凭据。');
     } catch (error) {
       showToast('error', normalizeError(error));
     }
   };
 
   const handleSaveToken = async () => {
-    const account = persistAccount();
-    if (!account || !tokenInput.trim()) return;
+    if (!tokenInput.trim()) return;
     setTokenBusy(true);
     try {
+      const account = await persistAccount();
       await saveOpenApiToken(account, tokenInput.trim());
       setTokenInput('');
-      setTokenReady(true);
+      await Promise.all([refreshAccountStatus(account), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已保存到系统密钥库。');
     } catch (error) {
       showToast('error', normalizeError(error));
@@ -382,13 +531,11 @@ export default function App() {
   };
 
   const handleClearToken = async () => {
-    const account = accountName.trim();
-    if (!account) return;
     setTokenBusy(true);
     try {
-      await clearOpenApiToken(account);
-      setTokenReady(false);
+      await clearOpenApiToken(accountName);
       setTokenInput('');
+      await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已从系统密钥库清除。');
     } catch (error) {
       showToast('error', normalizeError(error));
@@ -406,10 +553,10 @@ export default function App() {
   const handleClearPreviewCache = async () => {
     setCacheBusy(true);
     try {
-      setCacheStats(await clearPreviewCache());
-      await refreshAssets();
+      setCacheStats(await clearPreviewCache(accountName));
+      await refreshAssets(accountName);
       setCacheEpoch((value) => value + 1);
-      showToast('success', '本地缓存已清理。进入视口的图片会通过已上传 URL 限速重建缩略图。');
+      showToast('success', '当前账号的本地缓存已清理。进入视口的图片会按需重建缩略图。');
     } catch (error) {
       showToast('error', normalizeError(error));
     } finally {
@@ -420,52 +567,169 @@ export default function App() {
   const addFiles = async (files: File[]) => {
     const accepted = files.filter((file) => isImageFile(file) && file.size > 0 && file.size <= MAX_UPLOAD_BYTES);
     if (accepted.length !== files.length) showToast('error', '已忽略非图片、空文件或超过 50 MB 的图片。');
-    const items = await mapWithConcurrency(accepted, QUEUE_PREVIEW_CONCURRENCY, createQueueItem);
-    setQueue((current) => [...items, ...current]);
+    if (accepted.length === 0) return;
+    const account = activeAccountRef.current;
+    const category = uploadCategory.trim() || DEFAULT_CATEGORY;
+    localStorage.setItem('quepic-upload-category', category);
+    const items = await mapWithConcurrency(
+      accepted,
+      QUEUE_PREVIEW_CONCURRENCY,
+      (file) => createQueueItem(file, account, category),
+    );
+    commitQueue((current) => [...items, ...current]);
+    try {
+      await saveStoredQueueItems(items.map(toStoredQueueItem));
+    } catch (error) {
+      showToast('error', `队列已加入，但持久化失败：${normalizeError(error)}`);
+    }
   };
+
+  const markQueueItem = useCallback((id: string, changes: Partial<UploadQueueItem>) => {
+    let updated: UploadQueueItem | undefined;
+    commitQueue((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      updated = { ...item, ...changes };
+      return updated;
+    }));
+    return updated;
+  }, [commitQueue]);
 
   const uploadOne = useCallback(async (id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
-    if (!item || item.status === 'uploading') return;
-    setQueue((current) => current.map((candidate) =>
-      candidate.id === id ? { ...candidate, status: 'uploading', error: undefined } : candidate,
-    ));
-    try {
-      const category = uploadCategory.trim() || DEFAULT_CATEGORY;
-      localStorage.setItem('quepic-upload-category', category);
-      const result = await uploadImage(item.file, accountName, item.width, item.height, category);
-      setQueue((current) => current.map((candidate) =>
-        candidate.id === id ? { ...candidate, status: 'success', result } : candidate,
-      ));
-      const [nextQuota] = await Promise.all([
-        getUploadQuotaStatus(accountName),
-        refreshAssets(),
-        refreshCacheStats(),
-      ]);
-      setQuota(nextQuota);
-    } catch (error) {
-      setQueue((current) => current.map((candidate) =>
-        candidate.id === id ? { ...candidate, status: 'failed', error: normalizeError(error) } : candidate,
-      ));
-      try {
-        setQuota(await getUploadQuotaStatus(accountName));
-      } catch {
-        // 上传错误本身已在队列中展示。
-      }
+    if (!item || item.status === 'uploading' || item.status === 'success') return false;
+    const credential = await getCredentialStatus(item.accountName);
+    if (!credential.configured) {
+      const failed = markQueueItem(id, {
+        status: 'failed',
+        scheduledAt: null,
+        error: `账号“${item.accountName}”尚未保存有效语雀会话。`,
+      });
+      if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
+      return false;
     }
-  }, [accountName, refreshAssets, refreshCacheStats, uploadCategory]);
+
+    markQueueItem(id, { status: 'uploading', scheduledAt: null, error: undefined });
+    try {
+      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);
+      markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
+      await removeStoredQueueItem(id);
+      if (activeAccountRef.current === item.accountName) {
+        await Promise.all([
+          refreshAssets(item.accountName),
+          refreshCacheStats(item.accountName),
+          refreshAccountStatus(item.accountName),
+        ]);
+      }
+      await refreshProfiles();
+      return true;
+    } catch (error) {
+      const failed = markQueueItem(id, {
+        status: 'failed',
+        scheduledAt: null,
+        error: normalizeError(error),
+      });
+      if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
+      if (activeAccountRef.current === item.accountName) {
+        await refreshAccountStatus(item.accountName);
+      }
+      return false;
+    }
+  }, [markQueueItem, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles]);
 
   const uploadAll = async () => {
     if (!credentialReady) {
       setView('settings');
-      return showToast('error', '请先登录语雀并保存会话。');
+      return showToast('error', '请先为当前账号登录语雀并保存会话。');
     }
     if (!quotaAvailable) return showToast('error', `当前小时上传额度已用完，请在 ${formatResetTime(quota?.reset_at || null)} 后继续。`);
     const ids = queueRef.current
-      .filter((item) => item.status === 'waiting' || item.status === 'failed')
+      .filter((item) => item.accountName === accountName && ['waiting', 'failed', 'scheduled'].includes(item.status))
       .map((item) => item.id);
     for (const id of ids) await uploadOne(id);
   };
+
+  const scheduleRemaining = async () => {
+    const scheduledAt = Date.now() + AUTO_UPLOAD_DELAY_MS;
+    const updated: UploadQueueItem[] = [];
+    commitQueue((current) => current.map((item) => {
+      if (item.accountName !== accountName || !['waiting', 'failed', 'scheduled'].includes(item.status)) return item;
+      const next: UploadQueueItem = { ...item, status: 'scheduled', scheduledAt, error: undefined };
+      updated.push(next);
+      return next;
+    }));
+    if (updated.length === 0) return showToast('error', '当前账号没有可计划的剩余图片。');
+    try {
+      await saveStoredQueueItems(updated.map(toStoredQueueItem));
+      showToast('success', `已计划 ${updated.length} 张图片，将在 ${formatScheduleTime(scheduledAt)} 自动续传。`);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    }
+  };
+
+  const rescheduleItems = useCallback(async (items: UploadQueueItem[], scheduledAt: number, reason?: string) => {
+    const ids = new Set(items.map((item) => item.id));
+    const updated: UploadQueueItem[] = [];
+    commitQueue((current) => current.map((item) => {
+      if (!ids.has(item.id)) return item;
+      const next: UploadQueueItem = { ...item, status: 'scheduled', scheduledAt, error: reason };
+      updated.push(next);
+      return next;
+    }));
+    await saveStoredQueueItems(updated.map(toStoredQueueItem));
+  }, [commitQueue]);
+
+  const runDueUploads = useCallback(async () => {
+    if (autoUploadRunningRef.current) return;
+    const due = queueRef.current.filter((item) => item.status === 'scheduled' && (item.scheduledAt || 0) <= Date.now());
+    if (due.length === 0) return;
+    autoUploadRunningRef.current = true;
+    try {
+      const accounts = Array.from(new Set<string>(due.map((item) => item.accountName)));
+      for (const account of accounts) {
+        const accountItems = due.filter((item) => item.accountName === account);
+        const credential = await getCredentialStatus(account);
+        if (!credential.configured) {
+          for (const item of accountItems) {
+            const failed = markQueueItem(item.id, {
+              status: 'failed',
+              scheduledAt: null,
+              error: `账号“${account}”未登录，自动上传已暂停。`,
+            });
+            if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
+          }
+          continue;
+        }
+        const accountQuota = await getUploadQuotaStatus(account);
+        if (accountQuota.remaining <= 0) {
+          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
+          await rescheduleItems(accountItems, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');
+          continue;
+        }
+        for (const item of accountItems.slice(0, accountQuota.remaining)) await uploadOne(item.id);
+        const overflow = accountItems.slice(accountQuota.remaining);
+        if (overflow.length > 0) {
+          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
+          await rescheduleItems(overflow, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');
+        }
+      }
+      if (activeAccountRef.current) await refreshAccountStatus(activeAccountRef.current);
+    } catch (error) {
+      showToast('error', `自动上传失败：${normalizeError(error)}`);
+    } finally {
+      autoUploadRunningRef.current = false;
+    }
+  }, [markQueueItem, refreshAccountStatus, rescheduleItems, showToast, uploadOne]);
+
+  useEffect(() => {
+    const scheduled = queue
+      .filter((item) => item.status === 'scheduled' && item.scheduledAt)
+      .map((item) => item.scheduledAt as number);
+    if (scheduled.length === 0) return undefined;
+    const next = Math.min(...scheduled);
+    const delay = Math.max(0, Math.min(next - Date.now(), 60_000));
+    const timer = window.setTimeout(() => void runDueUploads(), delay);
+    return () => window.clearTimeout(timer);
+  }, [queue, runDueUploads]);
 
   const copyText = useCallback(async (value: string) => {
     await navigator.clipboard.writeText(value);
@@ -473,18 +737,30 @@ export default function App() {
   }, [showToast]);
 
   const removeQueueItem = useCallback((id: string) => {
-    setQueue((current) => {
-      const target = current.find((item) => item.id === id);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return current.filter((item) => item.id !== id);
-    });
-  }, []);
+    const target = queueRef.current.find((item) => item.id === id);
+    if (target?.status === 'uploading') return;
+    if (target) URL.revokeObjectURL(target.previewUrl);
+    commitQueue((current) => current.filter((item) => item.id !== id));
+    void removeStoredQueueItem(id).catch((error) => showToast('error', normalizeError(error)));
+  }, [commitQueue, showToast]);
+
+  const clearCompletedQueue = () => {
+    const completed = queueRef.current.filter((item) => item.accountName === accountName && item.status === 'success');
+    completed.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    const ids = new Set(completed.map((item) => item.id));
+    commitQueue((current) => current.filter((item) => !ids.has(item.id)));
+  };
 
   const handleDeleteAsset = async (asset: AssetRecord) => {
     try {
       await deleteAsset(asset.id);
       setSelected(null);
-      await Promise.all([refreshAssets(), refreshCacheStats()]);
+      setSelectedAssetIds((current) => {
+        const next = new Set(current);
+        next.delete(asset.id);
+        return next;
+      });
+      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
       showToast('success', '本地记录和对应缓存已删除，语雀远程图片未删除。');
     } catch (error) {
       showToast('error', normalizeError(error));
@@ -503,6 +779,52 @@ export default function App() {
     }
   };
 
+  const toggleAssetSelection = (id: number) => {
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllFiltered = () => {
+    setSelectedAssetIds(new Set(filteredAssets.map((asset) => asset.id)));
+  };
+
+  const handleBulkCategory = async () => {
+    const ids = [...selectedAssetIds];
+    if (ids.length === 0) return;
+    const category = bulkCategory.trim() || DEFAULT_CATEGORY;
+    setLibraryBusy(true);
+    try {
+      for (const id of ids) await updateAssetCategory(id, category);
+      await refreshAssets();
+      showToast('success', `已将 ${ids.length} 张图片归类到“${category}”。`);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedAssetIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`确认删除选中的 ${ids.length} 条本地图片记录和缓存吗？语雀远程图片不会删除。`)) return;
+    setLibraryBusy(true);
+    try {
+      for (const id of ids) await deleteAsset(id);
+      setSelected(null);
+      setSelectedAssetIds(new Set());
+      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
+      showToast('success', `已删除 ${ids.length} 条本地图片记录。`);
+    } catch (error) {
+      showToast('error', normalizeError(error));
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
   const navItems: Array<{ key: ViewKey; label: string; icon: typeof CloudUpload }> = [
     { key: 'upload', label: '上传', icon: CloudUpload },
     { key: 'document', label: '文件夹转文档', icon: FolderUp },
@@ -511,10 +833,10 @@ export default function App() {
   ];
 
   const pageInfo: Record<ViewKey, { title: string; description: string }> = {
-    upload: { title: '上传图片', description: '受控限速上传到语雀，并同步建立本地预览。' },
-    document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建语雀文档。' },
-    library: { title: '图片库', description: '本地缓存优先，缺失时从已上传 URL 限速恢复缩略图。' },
-    settings: { title: '设置', description: '管理语雀会话、OpenAPI Token、缓存与上传额度。' },
+    upload: { title: '上传图片', description: '持久化上传队列，支持按账号隔离和一小时后自动续传。' },
+    document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建或更新语雀文档。' },
+    library: { title: '图片库', description: '搜索、排序、批量分类和批量清理当前账号的图片内容。' },
+    settings: { title: '设置', description: '显式切换账号，管理语雀会话、Token、缓存与上传额度。' },
   };
 
   return (
@@ -542,14 +864,25 @@ export default function App() {
         </div>
         <div className="credential-summary">
           <span className={credentialReady ? 'dot ready' : 'dot'} />
-          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{tokenReady ? '会话与 Token 已就绪' : '前往设置完善配置'}</small></div>
+          <div><strong>{credentialReady ? '语雀账号可用' : '尚未登录语雀'}</strong><small>{scheduledUploadCount ? `${scheduledUploadCount} 项等待自动上传` : tokenReady ? '会话与 Token 已就绪' : '前往设置完善配置'}</small></div>
         </div>
       </aside>
 
       <main>
         <header className="topbar">
           <div className="page-title"><span>QUEPIC WORKSPACE</span><h1>{pageInfo[view].title}</h1><p>{pageInfo[view].description}</p></div>
-          <div className="account-pill"><span className={credentialReady ? 'dot ready' : 'dot'} /><div><strong>{accountName}</strong><small>{credentialReady ? '语雀会话已保存' : '未连接语雀'}</small></div></div>
+          <label className="account-switcher">
+            <UserRound size={16} />
+            <select
+              value={accountName}
+              disabled={accountSwitching}
+              onChange={(event) => void handleSwitchAccount(event.target.value)}
+            >
+              {!accountProfiles.some((profile) => profile.account_name === accountName) && <option value={accountName}>{accountName}</option>}
+              {accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name}>{profile.account_name}</option>)}
+            </select>
+            {accountSwitching ? <LoaderCircle className="spin" size={15} /> : <span className={credentialReady ? 'dot ready' : 'dot'} />}
+          </label>
         </header>
 
         <section className="content">
@@ -557,29 +890,29 @@ export default function App() {
             <div className="upload-layout">
               <div
                 className="drop-zone"
-                onDragOver={(event: React.DragEvent<HTMLDivElement>) => event.preventDefault()}
-                onDrop={(event: React.DragEvent<HTMLDivElement>) => {
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
                   event.preventDefault();
                   void addFiles(Array.from(event.dataTransfer.files));
                 }}
               >
-                <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => {
                   void addFiles(Array.from(event.target.files || []));
                   event.currentTarget.value = '';
                 }} />
-                <span className="drop-eyebrow">RATE-LIMITED UPLOAD</span>
+                <span className="drop-eyebrow">PERSISTENT UPLOAD QUEUE</span>
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
-                <p>远程上传至少间隔 25 秒，并使用滚动一小时额度；重复图片直接复用历史链接。</p>
+                <p>图片加入队列时绑定当前账号和分类；切换账号后不会串用凭据，也不会丢失待上传文件。</p>
                 <label className="upload-category-field">
                   <Tags size={16} />
-                  <input value={uploadCategory} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
+                  <input value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
                 </label>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
-                <div className="drop-hints"><span>单张 50 MB</span><span>140 张/小时</span><span>自动去重</span></div>
+                <div className="drop-hints"><span>单张 50 MB</span><span>140 张/小时</span><span>队列持久化</span></div>
                 <div className="actions">
-                  <button className="button primary" onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
-                  <button className="button secondary" onClick={async () => {
+                  <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
+                  <button className="button secondary" disabled={!queueReady} onClick={async () => {
                     try {
                       const clipboardItems = await navigator.clipboard.read();
                       const files: File[] = [];
@@ -598,41 +931,54 @@ export default function App() {
               </div>
 
               <div className="panel queue-panel">
-                <div className="panel-heading">
-                  <div><span>UPLOAD QUEUE</span><h2>上传队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
-                  <button className="button primary compact" disabled={!credentialReady || !quotaAvailable || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button>
+                <div className="panel-heading queue-heading">
+                  <div><span>UPLOAD QUEUE · {accountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
+                  <div className="queue-heading-actions">
+                    <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />一小时后上传</button>
+                    <button className="button primary compact" disabled={!credentialReady || !quotaAvailable || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button>
+                  </div>
                 </div>
                 <div className="quota-strip">
                   <Gauge size={16} />
                   <span>{quota ? `过去一小时已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : '正在读取上传额度'}</span>
                   {quota?.retry_after_seconds ? <b>{formatDuration(quota.retry_after_seconds)} 后可继续</b> : <b>可上传</b>}
                 </div>
-                {!credentialReady && <div className="warning">请先在设置中登录语雀并保存会话。</div>}
-                {queue.length === 0 ? <div className="empty"><FileImage size={26} /><p>待上传图片会显示在这里。</p></div> : (
+                {nextScheduledAt && (
+                  <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一次自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>应用关闭时队列仍会保留，下次启动后自动补传已到期任务。</small></div>
+                )}
+                {!credentialReady && <div className="warning">当前账号尚未保存语雀会话；队列可继续添加，但到点后会暂停并提示登录。</div>}
+                {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>当前账号的待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
-                    {queue.map((item) => (
+                    {activeQueue.map((item) => (
                       <QueueItemRow key={item.id} item={item} onRetry={uploadOne} onCopy={copyText} onRemove={removeQueueItem} />
                     ))}
                   </div>
+                )}
+                {activeQueue.some((item) => item.status === 'success') && (
+                  <button className="queue-clear-completed" onClick={clearCompletedQueue}><ListChecks size={15} />清除已完成项目</button>
                 )}
               </div>
             </div>
           )}
 
           {view === 'document' && (
-            <BatchDocumentUploader accountName={accountName} onUploaded={() => void Promise.all([refreshAssets(), refreshCacheStats(), refreshAccountStatus()])} />
+            <BatchDocumentUploader accountName={accountName} onUploaded={() => void Promise.all([refreshAssets(), refreshCacheStats(), refreshAccountStatus(), refreshProfiles()])} />
           )}
 
           {view === 'library' && (
             <div className="library-layout">
               <div className="library-main">
                 <div className="library-heading">
-                  <div><span>LOCAL FIRST ASSET INDEX</span><h2>所有图片</h2><p>缓存缺失时从已上传 URL 限速获取缩略图，失败后可手动重试。</p></div>
-                  <label className="search"><Search size={17} /><input value={search} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setSearch(event.target.value)} placeholder="搜索文件名、分类、链接或类型" /></label>
+                  <div><span>LOCAL FIRST ASSET INDEX · {accountName}</span><h2>图片内容管理</h2><p>使用分类、搜索、排序和批量操作整理当前账号的图片库。</p></div>
+                  <div className="library-heading-controls">
+                    <label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、分类、链接或类型" /></label>
+                    <label className="library-sort"><ArrowUpDown size={16} /><select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}><option value="newest">最新上传</option><option value="oldest">最早上传</option><option value="name">文件名</option><option value="size">文件大小</option><option value="category">分类</option></select></label>
+                  </div>
                 </div>
                 <div className="category-filter">
-                  {['全部', ...categories].map((category) => (
-                    <button key={category} className={categoryFilter === category ? 'active' : ''} onClick={() => setCategoryFilter(category)}>{category}</button>
+                  <button className={categoryFilter === '全部' ? 'active' : ''} onClick={() => setCategoryFilter('全部')}>全部 {assets.length}</button>
+                  {categories.map((category) => (
+                    <button key={category} className={categoryFilter === category ? 'active' : ''} onClick={() => setCategoryFilter(category)}>{category} {categoryCounts.get(category) || 0}</button>
                   ))}
                 </div>
                 <div className="library-overview">
@@ -641,29 +987,44 @@ export default function App() {
                   <div><HardDrive size={18} /><span><strong>{cacheStats.cached_count}</strong><small>本地缓存</small></span></div>
                   <div><Database size={18} /><span><strong>{formatBytes(cacheStats.cache_bytes)}</strong><small>缓存占用</small></span></div>
                 </div>
+                <div className="library-bulk-toolbar">
+                  <button className="select-toggle" disabled={filteredAssets.length === 0} onClick={selectedAssetIds.size === filteredAssets.length && filteredAssets.length > 0 ? () => setSelectedAssetIds(new Set()) : selectAllFiltered}>
+                    {selectedAssetIds.size === filteredAssets.length && filteredAssets.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />}
+                    {selectedAssetIds.size ? `已选 ${selectedAssetIds.size} 张` : '选择当前结果'}
+                  </button>
+                  <div className="bulk-category-editor">
+                    <Tags size={15} /><input value={bulkCategory} onChange={(event) => setBulkCategory(event.target.value)} list="category-options" placeholder="批量分类" />
+                    <button disabled={libraryBusy || selectedAssetIds.size === 0} onClick={() => void handleBulkCategory()}>应用分类</button>
+                  </div>
+                  <button className="bulk-delete" disabled={libraryBusy || selectedAssetIds.size === 0} onClick={() => void handleBulkDelete()}>{libraryBusy ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}删除本地记录</button>
+                </div>
                 {filteredAssets.length === 0 ? <div className="empty large"><Images size={30} /><h3>{assets.length ? '没有匹配图片' : '还没有上传记录'}</h3></div> : (
                   <div className="asset-grid">
-                    {filteredAssets.map((asset) => (
-                      <article
-                        className="asset-card"
-                        key={asset.id}
-                        role="button"
-                        tabIndex={0}
-                        aria-label={`查看 ${asset.file_name}`}
-                        onClick={() => setSelected(asset)}
-                        onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
-                          if (event.key === 'Enter' || event.key === ' ') setSelected(asset);
-                        }}
-                      >
-                        <AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} />
-                        <div className="asset-card-body">
-                          <strong>{asset.file_name}</strong>
-                          <span className="asset-category-tag">{asset.category || DEFAULT_CATEGORY}</span>
-                          <span className={asset.cache_status === 'ready' ? 'asset-cache-state ready' : 'asset-cache-state'}>{asset.cache_status === 'ready' ? '已缓存' : '按需缓存'}</span>
-                          <small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type}</small>
-                        </div>
-                      </article>
-                    ))}
+                    {filteredAssets.map((asset) => {
+                      const checked = selectedAssetIds.has(asset.id);
+                      return (
+                        <article
+                          className={checked ? 'asset-card selected' : 'asset-card'}
+                          key={asset.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`查看 ${asset.file_name}`}
+                          onClick={() => setSelected(asset)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') setSelected(asset);
+                          }}
+                        >
+                          <button className="asset-select" aria-label={checked ? '取消选择' : '选择图片'} onClick={(event) => { event.stopPropagation(); toggleAssetSelection(asset.id); }}>{checked ? <CheckSquare size={18} /> : <Square size={18} />}</button>
+                          <AssetPreview asset={asset} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} onCacheChanged={handlePreviewCached} />
+                          <div className="asset-card-body">
+                            <strong>{asset.file_name}</strong>
+                            <span className="asset-category-tag">{asset.category || DEFAULT_CATEGORY}</span>
+                            <span className={asset.cache_status === 'ready' ? 'asset-cache-state ready' : 'asset-cache-state'}>{asset.cache_status === 'ready' ? '已缓存' : '按需缓存'}</span>
+                            <small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)}</small>
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -683,10 +1044,7 @@ export default function App() {
                         <div><dt>缓存</dt><dd>{selected.cache_status === 'ready' ? formatBytes(selected.cache_bytes || 0) : '按需建立'}</dd></div>
                         <div><dt>上传时间</dt><dd>{new Date(selected.uploaded_at).toLocaleString()}</dd></div>
                       </dl>
-                      <label className="field detail-category-field">
-                        <span>图片分类</span>
-                        <input value={categoryDraft} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setCategoryDraft(event.target.value)} list="category-options" placeholder="未分类" />
-                      </label>
+                      <label className="field detail-category-field"><span>图片分类</span><input value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} list="category-options" placeholder="未分类" /></label>
                       <button className="button primary" onClick={() => void handleSaveCategory()}><Save size={16} />保存分类</button>
                       <button className="button secondary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button>
                       <button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button>
@@ -703,38 +1061,53 @@ export default function App() {
           {view === 'settings' && (
             <div className="settings-layout">
               <div className="settings-stack">
+                <div className="panel settings-panel account-manager-panel">
+                  <div className="panel-heading"><div><span>ACCOUNT CONTEXT</span><h2>账号管理与切换</h2><p>切换时同步刷新凭据、额度、图片库和缓存，不再重载页面或丢失上传队列。</p></div><UserRound size={20} /></div>
+                  <div className="account-create-row">
+                    <label className="field"><span>账号名称</span><input value={accountDraft} onChange={(event) => setAccountDraft(event.target.value)} list="account-options" placeholder="例如：个人、工作" /></label>
+                    <datalist id="account-options">{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name} />)}</datalist>
+                    <button className="button primary" disabled={accountSwitching || !accountDraft.trim()} onClick={() => void handleSwitchAccount(accountDraft)}>{accountSwitching ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}添加或切换</button>
+                  </div>
+                  <div className="account-profile-grid">
+                    {accountProfiles.map((profile) => (
+                      <button key={profile.account_name} className={profile.account_name === accountName ? 'account-profile active' : 'account-profile'} onClick={() => void handleSwitchAccount(profile.account_name)}>
+                        <strong>{profile.account_name}</strong><small>{profile.asset_count} 张图片 · {profile.cached_count} 张缓存</small><span>{profile.credential_configured ? '已登录' : '未登录'} · {profile.token_configured ? 'Token 已配置' : 'Token 未配置'}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="panel settings-panel">
-                  <div className="panel-heading"><div><span>YUQUE ACCOUNT</span><h2>语雀登录</h2><p>登录会话用于上传图片，以及私有图片回源。</p></div><div className={credentialReady ? 'status ready-status' : 'status'}>{credentialReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{credentialReady ? '已连接' : '未连接'}</div></div>
-                  <label className="field"><span>账号名称</span><input value={accountName} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setAccountName(event.target.value)} onBlur={handleAccountNameBlur} placeholder="default" /><small>Cookie、Token 和上传额度均按账号隔离；账号变化后应用会统一切换上下文。</small></label>
+                  <div className="panel-heading"><div><span>YUQUE ACCOUNT</span><h2>语雀登录</h2><p>当前账号：{accountName}。登录会话用于上传图片和私有图片回源。</p></div><div className={credentialReady ? 'status ready-status' : 'status'}>{credentialReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{credentialReady ? '已连接' : '未连接'}</div></div>
                   <div className="actions">
-                    <button className="button primary" disabled={loginBusy || !accountName.trim()} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
-                    <button className="button secondary" disabled={loginBusy || !accountName.trim()} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
+                    <button className="button primary" disabled={loginBusy} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
+                    <button className="button secondary" disabled={loginBusy} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
                     <button className="button danger" disabled={!credentialReady} onClick={() => void handleClearCredential()}><Trash2 size={17} />清除登录凭据</button>
                   </div>
                   <details>
                     <summary>高级：手动粘贴 Cookie</summary>
-                    <label className="field"><span>完整 Cookie</span><textarea value={cookieInput} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setCookieInput(event.target.value)} rows={6} placeholder="从 /api/upload/attach 请求头复制完整 Cookie 值" /><small>长 Cookie 会自动拆分成多个系统密钥库条目。</small></label>
-                    <button className="button secondary" disabled={loginBusy || !accountName.trim() || !cookieInput.trim()} onClick={() => void handleManualCookieSave()}><ShieldCheck size={17} />手动安全保存</button>
+                    <label className="field"><span>完整 Cookie</span><textarea value={cookieInput} onChange={(event) => setCookieInput(event.target.value)} rows={6} placeholder="从 /api/upload/attach 请求头复制完整 Cookie 值" /><small>长 Cookie 会自动拆分成多个系统密钥库条目。</small></label>
+                    <button className="button secondary" disabled={loginBusy || !cookieInput.trim()} onClick={() => void handleManualCookieSave()}><ShieldCheck size={17} />手动安全保存</button>
                   </details>
                 </div>
 
                 <div className="panel settings-panel token-panel">
-                  <div className="panel-heading"><div><span>YUQUE OPENAPI</span><h2>OpenAPI Token</h2><p>用于“文件夹转文档”创建 Markdown 文档，按账号保存到系统密钥库。</p></div><div className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{tokenReady ? '已保存' : '未配置'}</div></div>
-                  <label className="field"><span>Token</span><input type="password" autoComplete="off" value={tokenInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setTokenInput(event.target.value)} placeholder={tokenReady ? '输入新 Token 可覆盖现有配置' : '粘贴语雀 OpenAPI Token'} /><small>Token 不写入 localStorage、SQLite 或前端配置文件。</small></label>
+                  <div className="panel-heading"><div><span>YUQUE OPENAPI</span><h2>OpenAPI Token</h2><p>用于“文件夹转文档”，按当前账号保存到系统密钥库。</p></div><div className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{tokenReady ? '已保存' : '未配置'}</div></div>
+                  <label className="field"><span>Token</span><input type="password" autoComplete="off" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder={tokenReady ? '输入新 Token 可覆盖现有配置' : '粘贴语雀 OpenAPI Token'} /><small>Token 不写入 localStorage、SQLite 或前端配置文件。</small></label>
                   <div className="actions">
-                    <button className="button primary" disabled={tokenBusy || !accountName.trim() || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}安全保存 Token</button>
+                    <button className="button primary" disabled={tokenBusy || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}安全保存 Token</button>
                     <button className="button danger" disabled={tokenBusy || !tokenReady} onClick={() => void handleClearToken()}><Trash2 size={17} />清除 Token</button>
                   </div>
                 </div>
 
                 <div className="panel settings-panel quota-panel">
-                  <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传速度与额度</h2><p>为语雀上传接口保留安全余量，避免接近每小时约 150 张的上限。</p></div><Gauge size={20} /></div>
+                  <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传速度与额度</h2><p>为语雀上传接口保留安全余量，并支持队列跨小时自动续传。</p></div><Gauge size={20} /></div>
                   <div className="quota-metrics">
                     <div><strong>{quota?.used ?? 0}</strong><small>过去一小时尝试</small></div>
                     <div><strong>{quota?.remaining ?? 140}</strong><small>剩余额度</small></div>
                     <div><strong>{quota?.minimum_interval_seconds ?? 25}s</strong><small>最小间隔</small></div>
                   </div>
-                  <p className="panel-note">QuePic 使用 140 次/小时的保守上限。失败请求也计入本地额度，重复图片在上传前去重，不计入额度。</p>
+                  <p className="panel-note">失败请求也计入本地额度。队列任务绑定添加时的账号；应用运行时到点执行，应用关闭后会在下次启动补传。</p>
                 </div>
 
                 <div className="panel settings-panel cache-panel">
@@ -745,12 +1118,12 @@ export default function App() {
                   </div>
                   <label className="toggle-row">
                     <span><Globe2 size={17} /><span><strong>WordPress CDN 兼容兜底</strong><small>仅在本地、远程 URL 和语雀回源均失败时使用 `i3.wp.com`。</small></span></span>
-                    <input className="switch-input" type="checkbox" checked={allowWordpressFallback} onChange={(event: React.ChangeEvent<HTMLInputElement>) => handleWordpressFallbackChange(event.target.checked)} />
+                    <input className="switch-input" type="checkbox" checked={allowWordpressFallback} onChange={(event) => handleWordpressFallbackChange(event.target.checked)} />
                   </label>
-                  <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理本地缓存</button></div>
+                  <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理当前账号缓存</button></div>
                 </div>
               </div>
-              <div className="guide"><ShieldCheck size={24} /><div><h3>受控访问策略</h3><ol><li>缩略图只在接近可视区域时按需请求。</li><li>远程 URL 回源最多两路并发，并保持全局访问间隔。</li><li>所有远程地址必须使用 HTTPS 且属于语雀或 nlark 域名。</li><li>上传使用 140 次/小时与 25 秒最小间隔双重限制。</li><li>OpenAPI Token 与 Cookie 均保存在系统密钥库。</li></ol></div></div>
+              <div className="guide"><ShieldCheck size={24} /><div><h3>受控访问策略</h3><ol><li>图片库、缓存统计和额度始终使用显式账号参数。</li><li>队列中的文件、分类和目标账号保存在本地 IndexedDB。</li><li>自动任务到期前会重新检查对应账号凭据和滚动额度。</li><li>额度不足时自动顺延到下一次可用时间。</li><li>OpenAPI Token 与 Cookie 均保存在系统密钥库。</li></ol></div></div>
             </div>
           )}
         </section>
@@ -777,6 +1150,10 @@ function formatDuration(seconds: number): string {
 function formatResetTime(value: string | null): string {
   if (!value) return '稍后';
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatScheduleTime(value: number): string {
+  return new Date(value).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function normalizeError(error: unknown) {

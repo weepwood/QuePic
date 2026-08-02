@@ -26,7 +26,7 @@ export interface UploadResult {
   deduplicated: boolean;
 }
 
-export type UploadStatus = 'waiting' | 'uploading' | 'success' | 'failed';
+export type UploadStatus = 'waiting' | 'scheduled' | 'uploading' | 'success' | 'failed';
 
 export interface UploadQueueItem {
   id: string;
@@ -34,9 +34,35 @@ export interface UploadQueueItem {
   previewUrl: string;
   width: number | null;
   height: number | null;
+  accountName: string;
+  category: string;
+  createdAt: number;
+  scheduledAt: number | null;
   status: UploadStatus;
   result?: UploadResult;
   error?: string;
+}
+
+export interface StoredUploadQueueItem {
+  id: string;
+  file: File;
+  width: number | null;
+  height: number | null;
+  accountName: string;
+  category: string;
+  createdAt: number;
+  scheduledAt: number | null;
+  status: 'waiting' | 'scheduled' | 'failed';
+  error?: string;
+}
+
+export interface AccountProfile {
+  account_name: string;
+  credential_configured: boolean;
+  token_configured: boolean;
+  asset_count: number;
+  cached_count: number;
+  updated_at: string | null;
 }
 
 export interface CredentialStatus {

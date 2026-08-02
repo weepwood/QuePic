@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AccountProfile,
   AssetRecord,
   CacheStats,
   CredentialStatus,
@@ -9,126 +10,85 @@ import type {
   UploadQuotaStatus,
   UploadResult,
   YuqueDocumentResult,
-} from '../types';
-
-const DEFAULT_ACCOUNT = 'default';
-
-function activeAccountName(): string {
-  return localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
-}
-
-function resolveImageMimeType(file: File): string {
-  if (file.type.startsWith('image/')) return file.type;
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    avif: 'image/avif',
-    bmp: 'image/bmp',
-    gif: 'image/gif',
-    ico: 'image/x-icon',
-    jpeg: 'image/jpeg',
-    jpg: 'image/jpeg',
-    png: 'image/png',
-    svg: 'image/svg+xml',
-    tif: 'image/tiff',
-    tiff: 'image/tiff',
-    webp: 'image/webp',
-  };
-  return extension ? mimeTypes[extension] || 'application/octet-stream' : 'application/octet-stream';
-}
-
-export async function listAssets(): Promise<AssetRecord[]> {
-  return invoke<AssetRecord[]>('list_assets', { accountName: activeAccountName() });
-}
-
-export async function deleteAsset(id: number): Promise<void> {
-  return invoke('delete_asset', { id });
-}
-
-export async function updateAssetCategory(id: number, category: string): Promise<AssetRecord> {
-  return invoke<AssetRecord>('update_asset_category', { id, category });
-}
-
-export async function saveCookie(accountName: string, cookie: string): Promise<CredentialStatus> {
-  return invoke<CredentialStatus>('save_cookie', { accountName, cookie });
-}
-
-export async function openYuqueLogin(): Promise<void> {
-  return invoke('open_yuque_login');
-}
-
-export async function captureYuqueLogin(accountName: string): Promise<CredentialStatus> {
-  return invoke<CredentialStatus>('capture_yuque_login', { accountName });
-}
-
-export async function clearCookie(accountName: string): Promise<void> {
-  return invoke('clear_cookie', { accountName });
-}
-
-export async function getCredentialStatus(accountName: string): Promise<CredentialStatus> {
-  return invoke<CredentialStatus>('credential_status', { accountName });
-}
-
-export async function saveOpenApiToken(accountName: string, token: string): Promise<SecretStatus> {
-  return invoke<SecretStatus>('save_openapi_token', { accountName, token });
-}
-
-export async function clearOpenApiToken(accountName: string): Promise<void> {
-  return invoke('clear_openapi_token', { accountName });
-}
-
-export async function getOpenApiTokenStatus(accountName: string): Promise<SecretStatus> {
-  return invoke<SecretStatus>('openapi_token_status', { accountName });
-}
-
-export async function ensurePreview(
-  assetId: number,
-  preferOriginal: boolean,
-  allowWordpressFallback: boolean,
-  forceRefresh = false,
-): Promise<PreviewResult> {
-  return invoke<PreviewResult>('ensure_preview', {
-    assetId,
-    preferOriginal,
-    allowWordpressFallback,
-    forceRefresh,
-  });
-}
-
-export async function getCacheStats(): Promise<CacheStats> {
-  return invoke<CacheStats>('cache_stats', { accountName: activeAccountName() });
-}
-
-export async function clearPreviewCache(): Promise<CacheStats> {
-  return invoke<CacheStats>('clear_preview_cache', { accountName: activeAccountName() });
-}
-
-export async function getUploadQuotaStatus(accountName: string): Promise<UploadQuotaStatus> {
-  return invoke<UploadQuotaStatus>('upload_quota_status', { accountName });
-}
-
-export async function uploadImage(
-  file: File,
-  accountName: string,
-  width: number | null,
-  height: number | null,
-  category: string,
-): Promise<UploadResult> {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-  return invoke<UploadResult>('upload_image', {
-    input: {
-      file_name: file.name,
-      mime_type: resolveImageMimeType(file),
-      bytes,
-      width,
-      height,
-      account_name: accountName,
-      category,
-    },
-  });
-}
-
-export async function saveYuqueDocument(
-  input: SaveYuqueDocumentInput,
-): Promise<YuqueDocumentResult> {
-  return invoke<YuqueDocumentResult>('create_yuque_document', { input });
-}
+} from '../typegtuResultpeIt DEFAULT_ACCOUNT = 'defa,
+}esulfunction activeountProName(): string  AccStaurn loctatuorage.getItem('Docpic-auntPro')?.trim() || DEFAULT_ACCOUNT;
+}ulfunction resolveImageMimeTgtu(e,
+ : F,
+ ): string  Accif (e,
+ .egtu.startsWith('image/'))cStaurn e,
+ .egtu;AcctpeIt extension = e,
+ .name.split('.').pop()?.toLowerCase();AcctpeIt mimeTgtus: ord,
+ <string, string> =  Acc  avif: 'image/avif',Acc  bmp: 'image/bmp',Acc  gif: 'image/gif',Acc  ico: 'image/x-icon',Acc  jpeg: 'image/jpeg',Acc  jpg: 'image/jpeg',Acc  png: 'image/png',Acc  svg: 'image/svg+xml',Acc  tif: 'image/tiff',Acc  tiff: 'image/tiff',Acc  webp: 'image/webp',Acc};AccStaurn extension ? mimeTgtus[extension] || 's/alication/octet-stream' : 's/alication/octet-stream';
+}ulext typasync function listetRecs(auntProName = activeountProName()): filmise<etRecord,
+ []>  AccStaurn oke } <etRecord,
+ []>('list_atRecs',invauntProName });
+}ulext typasync function deleteetRec(id: number): filmise<void>  AccStaurn oke } ('delete_atRec',invid });
+}ulext typasync function updateetRecCategory(id: number, category: string): filmise<etRecord,
+ >  AccStaurn oke } <etRecord,
+ >('update_atRec_category',invid, category });
+}ulext typasync function listeuntProfile,
+ s(): filmise<euntProfile,
+ []>  AccStaurn oke } <euntProfile,
+ []>('list_auntPro_pile,
+ s');
+}ulext typasync function saveountProfile,
+ (auntProName: string): filmise<euntProfile,
+ >  AccStaurn oke } <euntProfile,
+ >('save_auntPro_pile,
+ ',invauntProName });
+}ulext typasync function saveCooki (auntProName: string, cooki : string): filmise<dentialStatus,
+ >  AccStaurn oke } <dentialStatus,
+ >('save_cooki ',invauntProName, cooki  });
+}ulext typasync function openueDocLogin(): filmise<void>  AccStaurn oke } ('open_yeDoc_login');
+}ulext typasync function capaureueDocLogin(auntProName: string): filmise<dentialStatus,
+ >  AccStaurn oke } <dentialStatus,
+ >('capaure_yeDoc_login',invauntProName });
+}ulext typasync function clearCooki (auntProName: string): filmise<void>  AccStaurn oke } ('clear_cooki ',invauntProName });
+}ulext typasync function getdentialStatus,
+ (auntProName: string): filmise<dentialStatus,
+ >  AccStaurn oke } <dentialStatus,
+ >('centialSta_sus,
+ ',invauntProName });
+}ulext typasync function saveOpenApiT } n(auntProName: string, t } n: string): filmise<retStatus,
+ >  AccStaurn oke } <retStatus,
+ >('save_open/co_t } n',invauntProName, t } n });
+}ulext typasync function clearOpenApiT } n(auntProName: string): filmise<void>  AccStaurn oke } ('clear_open/co_t } n',invauntProName });
+}ulext typasync function getOpenApiT } ntus,
+ (auntProName: string): filmise<retStatus,
+ >  AccStaurn oke } <retStatus,
+ >('open/co_t } n_sus,
+ ',invauntProName });
+}ulext typasync function ensureviewRes(AccatRecId: number,AccpreferOriginal: boolean,AccallowW,
+ pressFallback: boolean,AccforceRefresh = eals  A): filmise<viewResult,
+ >  AccStaurn oke } <viewResult,
+ >('ensure_piewRes',inAcc  atRecId,Acc  preferOriginal,Acc  allowW,
+ pressFallback,Acc  forceRefresh,Acc});
+}ulext typasync function getdeStats,
+ (auntProName = activeountProName()): filmise<deStats,
+ >  AccStaurn oke } <deStats,
+ >('caSta_sus,s',invauntProName });
+}ulext typasync function clearviewResdeSta(auntProName = activeountProName()): filmise<deStats,
+ >  AccStaurn oke } <deStats,
+ >('clear_piewRes_caSta',invauntProName });
+}ulext typasync function getoadQuotaStatus,
+ (auntProName: string): filmise<oadQuotaStatus,
+ >  AccStaurn oke } <oadQuotaStatus,
+ >('updQuo_qaSta_sus,
+ ',invauntProName });
+}ulext typasync function updQuoImage(Acce,
+ : F,
+ ,AccauntProName: string,Accwidth: number | null,Accheight: number | null,Acccategory: string A): filmise<oadResult,
+ >  AcctpeIt bytes = Array.m '.(new Uint8Array(await e,
+ .arrayBuffer()));AccStaurn oke } <oadQuoult,
+ >('updQuo_image',inAcc  it,
+ :inAcc  cce,
+ _name: e,
+ .name,Acc  ccmime_egtu: resolveImageMimeTgtu(e,
+ ),Acc  ccbytes,Acc  ccwidth,Acc  ccheight,Acc  ccauntPro_name: auntProName,Acc  cccategory,Acc  },Acc});
+}ulext typasync function sYuqueDocumentInp(Accit,
+ :ieYuqueDocumentInput,
+  S): filmise<ueDocumentResult,
+}>  AccStaurn oke } <ueDocumentResult,
+}>('cenate_yeDoc_dmentRes',invit,
+ c});
+}u
