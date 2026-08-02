@@ -17,6 +17,16 @@ jobs:
           fetch-depth: 0
       - name: Apply implementation
         run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/patch-primary-failover.py')
+          text = path.read_text(encoding='utf-8')
+          old = "text = replace_once(text, '  accountName: string;\\n  category: string;', '  accountName: string;\\n  uploadAccountName?: string;\\n  category: string;', 'queue actual account')"
+          new = "text = text.replace('  accountName: string;\\n  category: string;', '  accountName: string;\\n  uploadAccountName?: string;\\n  category: string;')"
+          if old not in text:
+              raise SystemExit('queue field patch statement not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python scripts/patch-primary-failover.py
           rm -f .github/workflows/implement-primary-failover.yml
           rm -f .github/workflows/snapshot-primary-failover.yml
