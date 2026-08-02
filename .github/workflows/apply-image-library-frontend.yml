@@ -22,6 +22,17 @@ jobs:
         with:
           node-version: 22
 
+      - name: Prepare frontend patch
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply_image_library_frontend.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace("insert_marker = '\\nfunction normalizeError(error: unknown): string {'", "insert_marker = '\\nfunction normalizeError(error: unknown) {'")
+          text = text.replace("function normalizeError(error: unknown): string {", "function normalizeError(error: unknown) {")
+          path.write_text(text, encoding='utf-8')
+          PY
+
       - name: Apply frontend implementation
         run: python3 .github/scripts/apply_image_library_frontend.py
 
@@ -34,16 +45,11 @@ jobs:
       - name: Capture failure log
         if: failure()
         run: |
-          tail -n 260 /tmp/frontend-build.log > .github/image-library-frontend-build.log || true
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/image-library-frontend-build.log
-          git commit -m "chore: 保存图库界面构建失败日志" || true
-          git push origin HEAD:feat/image-library-overhaul || true
+          if [ -f /tmp/frontend-build.log ]; then tail -n 260 /tmp/frontend-build.log; fi
 
       - name: Commit frontend implementation
         run: |
-          rm -f package-lock.json .github/image-library-frontend-build.log
+          rm -f package-lock.json
           rm .github/scripts/apply_image_library_frontend.py
           rm .github/workflows/apply-image-library-frontend.yml
           git config user.name "github-actions[bot]"
