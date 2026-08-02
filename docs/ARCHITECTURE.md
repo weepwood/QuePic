@@ -1,160 +1,273 @@
 # QuePic 架构设计
 
-## 目标
+## 1. 产品边界
 
-QuePic 将远程上传、本地索引与本地预览分离：语雀只承担图片托管，SQLite 保存资产和缓存元数据，应用缓存目录保存原图与缩略图，Cookie 只存在于操作系统密钥库。
+QuePic 是面向语雀工作流的本地优先图片采集、整理和文档发布工具。
 
-核心目标是让图片库不再依赖 WebView 直接访问带防盗链的语雀 CDN URL。
+它不是语雀官方附件管理器，也不是通用云盘。语雀承担远程图片托管和文档存储；QuePic 负责本地上传编排、资产索引、预览缓存、分类检索和失败恢复。
 
-## 上传数据流
+当前架构基线为 v0.8.0。
+
+## 2. 技术栈
+
+- React 19 + TypeScript + Vite
+- Tauri 2
+- Rust + Tokio
+- SQLite / rusqlite，WAL 模式
+- reqwest + rustls
+- image-rs
+- keyring-rs
+
+## 3. 数据与状态分层
+
+### SQLite
+
+保存：
+
+- 图片资产索引；
+- 来源账号；
+- 文件夹和标签；
+- 本地缓存元数据；
+- 账号档案与统计；
+- 每账号上传尝试和整点额度；
+- 备份恢复所需的非敏感数据。
+
+### 系统密钥库
+
+保存：
+
+- 语雀 Cookie；
+- OpenAPI Token。
+
+完整凭据不进入 React、SQLite、localStorage、IndexedDB、日志或备份。
+
+### IndexedDB
+
+当前保存普通图片上传队列及 File/Blob，用于页面刷新和应用重启后的普通队列恢复。
+
+这是过渡实现。未来持久任务系统会改为 Rust 持有本地路径、SQLite 持有任务状态，不再把浏览器 Blob 作为长期任务事实来源。
+
+### localStorage
+
+当前仍保存部分用户偏好和业务设置：
+
+- 当前账号；
+- 主账号；
+- 子账号接力开关；
+- 默认知识库和目标文档 URL；
+- 图库视图；
+- 上传默认文件夹和标签；
+- WordPress 兼容开关；
+- 上传上下文。
+
+业务设置迁移到 SQLite `app_settings` 的计划见 Issue #32。
+
+## 4. 主子账号模型
+
+### 主账号
+
+主账号必须具有：
+
+- Cookie；
+- OpenAPI Token；
+- 可解析的上传上下文文档。
+
+主账号负责文档创建、更新和大图片上传。
+
+### 子账号
+
+子账号只需要 Cookie，可处理不超过 10 MB 的图片，不需要 Token，也不需要目标文档访问权限。
+
+所有账号上传的图片进入共享图库；最终 Markdown 由主账号写入主账号文档。
+
+### 当前路由
+
+React 读取账号档案和额度，并使用 `uploadRouting.ts` 排序候选账号。Rust 在真正上传前再次校验：
+
+- Cookie；
+- Token 对应的文件大小上限；
+- 上传上下文；
+- 实时整点额度；
+- 同账号 SHA-256 去重。
+
+该模式已经具备后端二次防线，但权威路由仍应迁移到 Rust，避免多个前端入口并发读取过期配额。目标见 Issue #32。
+
+## 5. 普通上传数据流
 
 ```text
-React 文件选择/拖放
-  → 读取尺寸和临时预览
-  → Tauri IPC 传入图片字节
-  → Rust 校验大小、MIME 和文件名
+选择/拖放/剪贴板图片
+  → React 生成 160px WebP 临时预览
+  → IndexedDB 保存队列项和 Blob
+  → 主账号确保当天文档与上传上下文
+  → React 根据大小、账号状态和配额排序候选账号
+  → Tauri IPC 提交图片字节和候选账号
+  → Rust 校验 MIME、大小、账号和文档上下文
   → 计算 SHA-256
-  → 命中重复记录时复用远程链接并补建本地缓存
-  → 从系统密钥库读取 Cookie
-  → POST /api/upload/attach
-  → 校验状态码、响应结构和 data.url 域名
-  → 写入 SQLite assets
-  → 保存本地原图
-  → 生成最长边 512px 的 PNG 缩略图
-  → 写入 SQLite asset_previews
-  → 返回远程 URL 与本地缓存状态
+  → 同账号命中重复记录时复用远程 URL
+  → 获取 Cookie并记录上传尝试
+  → POST 固定语雀图片上传接口
+  → 校验响应和远程 URL 白名单
+  → SQLite 提交资产、文件夹和标签
+  → 生成详情预览与缩略图
+  → React 汇总成功项
+  → 主账号幂等追加到当天文档
 ```
 
-上传阶段在调用语雀前复制一份图片字节用于本地缓存。上传成功后无需再次请求远程图片。
+图片上传成功、文档写入失败时，队列保留 `UploadResult`。后续重试直接复用远程 URL。
 
-## 预览数据流
+## 6. 文件夹转文档数据流
+
+v0.8 的 `BatchDocumentUploader` 通过常驻 React 组件维持跨页面状态：
 
 ```text
-AssetPreview 进入可视区域附近
-  → AssetRecord 是否有可用本地路径？
-      ├─ 是：convertFileSrc + Tauri Asset Protocol
-      └─ 否：ensure_preview(asset_id)
-             → Rust 根据 asset_id 查询数据库
-             → 校验 remote_url 只属于 yuque.com / nlark.com
-             → 从对应账号的系统密钥库读取 Cookie
-             → Cookie + Referer 请求远程图片
-             → 禁止重定向、限制 image/* 和 30 MB
-             → 写入原图和缩略图缓存
-             → 更新 asset_previews
-             → 返回本地路径
-                 └─ 若失败且用户开启兼容模式
-                    → 返回经过验证的 i3.wp.com URL
+浏览器目录输入
+  → File.webkitRelativePath
+  → 中文数字自然排序
+  → 逐图选择候选账号
+  → Rust upload_image
+  → React 内存记录已上传 URL
+  → 额度耗尽时等待下一整点
+  → 汇总 Markdown
+  → Rust OpenAPI 创建或追加文档
 ```
 
-前端不能传入任意远程 URL，只能传递数据库中的 `asset_id`，避免把预览命令变成通用网络代理。
+“跨页面保持”不等于“跨应用退出恢复”。当前 File 对象、等待计时和已上传映射仍位于 React 内存。未来实现为：
 
-## 本地文件访问
+```text
+Tauri 文件夹选择器
+  → Rust 扫描目录
+  → upload_jobs / upload_job_items
+  → Rust 调度与 next_run_at
+  → document_sync_outbox
+  → 应用退出后恢复
+```
 
-缓存根目录：
+详见 Issue #33。
+
+## 7. 图片库和缓存
+
+### 数据模型
+
+- `assets`：图片摘要、文件名、类型、大小、尺寸、远程 URL、来源账号和上传时间；
+- `asset_categories`：单归属文件夹；
+- `asset_tags`：多标签；
+- `library_folders`：文件夹列表；
+- `asset_previews`：详情预览、缩略图、来源、状态、大小和错误；
+- `upload_attempts`：每账号上传尝试。
+
+同账号内通过 `UNIQUE(account_name, sha256)` 去重。不同账号上传相同字节会保留各自的语雀 URL，但本地物理缓存可按 SHA-256 共享。
+
+### 缓存结构
 
 ```text
 $APPCACHE/previews/
 └─ <sha256 前两位>/
    └─ <完整 sha256>/
-      ├─ original.<ext>
-      └─ thumbnail.png
+      ├─ original.* 或详情预览
+      └─ thumbnail.*
 ```
 
-Tauri Asset Protocol 只开放：
+当前新上传文件不会无条件永久保留完整原图。详情预览和缩略图经过大小约束；查看或保存原图时按需回源原始 URL。
+
+### 预览优先级
 
 ```text
-$APPCACHE/previews/**
+本地缓存
+  → 受控公开 URL 回源
+  → 来源账号 Cookie 会话回源
+  → WordPress CDN 兼容模式
+  → 错误状态
 ```
 
-React 使用 `convertFileSrc()` 把 Rust 返回的本地绝对路径转换成 WebView 可加载地址。应用数据目录、数据库、凭据或其他文件不在 Asset Protocol scope 中。
+前端只能提交 `asset_id`，不能把任意 URL 传给回源命令。
 
-## 懒加载策略
+## 8. 文档同步
 
-图片卡片通过 `IntersectionObserver` 监听，并设置约 260px 的预加载区域：
+OpenAPI Token 由 Rust 从系统密钥库读取，用于：
 
-- 屏幕附近的历史图片才触发回源；
-- 详情面板立即请求原图；
-- 多张图片陆续补建缓存时，前端用短延迟合并刷新 SQLite 记录和缓存统计；
-- 本地图片加载失败时只执行一次强制回源刷新，避免无限重试。
+- 列出知识库；
+- 创建或复用 QuePic 私有知识库；
+- 列出、创建、更新和删除文档；
+- 将文档登记到知识库目录。
 
-## React 边界
+每日文档使用本地日期 `YYYY-MM-DD` 命名。每张图片块带：
 
-React 负责：
+```html
+<!-- quepic-image:<asset_id> -->
+```
 
-- 页面、上传队列、搜索与详情；
-- 决定是否启用 WordPress CDN 实验兜底；
-- 使用 Asset Protocol 显示 Rust 返回的本地文件；
-- 展示缓存统计、加载状态和来源标签。
+Rust 在更新文档前过滤已存在标记，实现客户端重试幂等。
 
-React 不负责：
+未来将文档写入改为 SQLite Outbox，保证应用崩溃或网络超时后仍可恢复，见 Issue #33。
 
-- 读取 Cookie；
-- 直接带凭据访问语雀；
-- 接受任意 URL 并发起代理请求；
-- 直接操作 SQLite；
-- 直接读写缓存目录。
+## 9. 并发与锁
 
-## Rust 命令
+`AppState` 当前包含：
 
-凭据与登录：
+- `database_gate: RwLock`：普通命令读锁，备份导入/导出写锁；
+- `upload_gate: Mutex`：串行化远程上传和配额关键区；
+- `cache_lock: Mutex`：缓存文件和缓存索引一致性；
+- `preview_limiter`：远程预览并发与节流。
 
-- `save_cookie`
-- `open_yuque_login`
-- `capture_yuque_login`
-- `credential_status`
-- `clear_cookie`
+备份恢复会执行 WAL checkpoint，并在数据库/缓存替换失败时恢复旧数据。
 
-资产与缓存：
+前端全局维护态和更完整的故障注入仍由 Issue #22 跟踪。
 
-- `upload_image`
-- `list_assets`
-- `delete_asset`
-- `ensure_preview`
-- `cache_stats`
-- `clear_preview_cache`
+## 10. 安全边界
 
-## 数据库
+- 主窗口 capability 只开放 `core:default`；
+- Asset Protocol 只开放 `$APPCACHE/previews/**`；
+- CSP 不允许 WebView 直接加载语雀 CDN；
+- 上传请求固定到 `https://www.yuque.com/api/upload/attach`；
+- 网络客户端禁止自动重定向；
+- 远程 URL 只接受 HTTPS `yuque.com`、`nlark.com` 及子域；
+- Cookie 与 Token 只在 Rust 内部读取；
+- Tauri 不注册任何返回完整 Cookie/Token 的命令；
+- 登录窗口只允许 HTTPS 和 `about:` 导航，且关闭 DevTools。
 
-### assets
+## 11. 当前模块
 
-保存：
+```text
+React
+├─ App.tsx
+├─ AssetPreview
+├─ OriginalImageViewer
+├─ BatchDocumentUploader
+├─ YuqueDocumentManager
+├─ tauri IPC wrapper
+├─ IndexedDB queue store
+└─ upload routing helper
 
-- SHA-256
-- 文件名、MIME、大小和尺寸
-- 语雀远程 URL
-- 账号名称
-- 上传时间
+Rust
+├─ credentials
+├─ openapi_token
+├─ accounts
+├─ database
+├─ preview
+├─ remote_preview
+├─ yuque upload/download
+├─ yuque_openapi
+├─ backup
+└─ lib command orchestration
+```
 
-`sha256` 是唯一键，完全相同的图片不会重复上传。
+当前主要技术债是 `App.tsx` 和 `lib.rs` 仍承担较多业务编排。目标架构见 Issue #31：
 
-### asset_previews
+```text
+React features
+  → typed IPC
+  → Tauri commands
+  → application services
+  → domain services
+  → repositories/providers
+```
 
-保存：
+## 12. 演进顺序
 
-- `asset_id`
-- 原图路径
-- 缩略图路径
-- 预览来源
-- 缓存状态
-- 缓存字节数
-- 缓存时间
-- 最近错误
-
-`asset_previews.asset_id` 外键指向 `assets.id` 并启用级联删除。清理缓存时只删除该表和缓存目录，不删除 `assets`。
-
-## 失败与恢复
-
-- 缩略图解码失败：保留原图，并用原图作为预览路径；
-- 历史图片回源失败：记录错误，不修改原始远程 URL；
-- 本地文件被外部删除：WebView 加载失败后执行一次强制回源；
-- Cookie 失效：显示重新登录提示；
-- WordPress 代理关闭：失败后显示占位图；
-- WordPress 代理开启：仅作为最后显示兜底，不写回远程 URL。
-
-## 后续演进
-
-- 缓存配额与 LRU 自动淘汰；
-- 批量离线预下载和取消任务；
-- 独立缩略图任务队列；
-- 多存储 Provider 统一预览接口；
-- 本地缓存完整性扫描和修复。
+1. #30：凭据安全、文档和 CI 基线；
+2. #22：备份恢复全局维护态和故障注入；
+3. #31：前后端模块边界；
+4. #32：统一设置和 Rust 权威路由；
+5. #33：持久任务与文档 Outbox；
+6. #34：测试、诊断、LRU 和 Release；
+7. #29：v1.0 总验收。
