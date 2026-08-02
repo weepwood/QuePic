@@ -126,6 +126,19 @@ export interface UploadContextResult {
   source: 'openapi' | 'session' | string;
 }
 
+export interface AppSettings {
+  initialized: boolean;
+  active_account: string;
+  primary_account: string;
+  account_failover_enabled: boolean;
+  knowledge_base_url: string;
+  document_url: string;
+  upload_category: string;
+  upload_tags: string;
+  library_view: 'original' | 'square' | string;
+  allow_wordpress_fallback: boolean;
+}
+
 export interface PortableSettings {
   active_account: string;
   allow_wordpress_fallback: boolean;
