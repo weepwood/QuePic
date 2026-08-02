@@ -246,11 +246,9 @@ function escapeMarkdownAlt(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
 }
 
-export async function appendImagesToDailyDocument(
+export async function ensureDailyImageDocument(
   accountName: string,
-  images: DailyDocumentImage[],
 ): Promise<YuqueDocumentResult | null> {
-  if (images.length === 0) return null;
   const token = await getOpenApiTokenStatus(accountName);
   if (!token.configured) return null;
 
@@ -258,6 +256,40 @@ export async function appendImagesToDailyDocument(
   const documents = await listYuqueDocuments(accountName, repository.namespace);
   const title = localDateKey();
   const existing = documents.find((document) => document.title.trim() === title);
+  const document: YuqueDocumentResult = existing
+    ? {
+        id: existing.id,
+        title: existing.title,
+        slug: existing.slug,
+        url: existing.url,
+        created: false,
+        namespace: repository.namespace,
+      }
+    : await saveYuqueDocument({
+        account_name: accountName,
+        knowledge_base_url: repository.url,
+        document_url: null,
+        title,
+        body: `# ${title}\n\n> QuePic 每日图片记录`,
+      });
+
+  if (!document.url) throw new Error('当天语雀文档没有可用 URL。');
+  const context = await resolveUploadContext(accountName, document.url);
+  saveStoredUploadContext(context);
+  return document;
+}
+
+export async function appendImagesToDailyDocument(
+  accountName: string,
+  images: DailyDocumentImage[],
+): Promise<YuqueDocumentResult | null> {
+  if (images.length === 0) return null;
+  const document = await ensureDailyImageDocument(accountName);
+  if (!document?.url) return null;
+  const repositoryUrl = new URL(document.url);
+  const segments = repositoryUrl.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) throw new Error('无法从当天文档解析知识库 URL。');
+  const knowledgeBaseUrl = `${repositoryUrl.origin}/${segments[0]}/${segments[1]}`;
   const time = new Date().toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -275,9 +307,9 @@ export async function appendImagesToDailyDocument(
 
   return saveYuqueDocument({
     account_name: accountName,
-    knowledge_base_url: repository.url,
-    document_url: existing?.url || null,
-    title,
+    knowledge_base_url: knowledgeBaseUrl,
+    document_url: document.url,
+    title: document.title,
     body,
   });
 }

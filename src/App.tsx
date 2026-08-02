@@ -42,6 +42,7 @@ import { BatchDocumentUploader } from './components/BatchDocumentUploader';
 import { OriginalImageViewer } from './components/OriginalImageViewer';
 import {
   appendImagesToDailyDocument,
+  ensureDailyImageDocument,
   captureYuqueLogin,
   clearCookie,
   clearOpenApiToken,
@@ -652,6 +653,21 @@ export default function App() {
     return updated;
   }, [commitQueue]);
 
+  const prepareUploadContextForAccount = useCallback(async (targetAccount: string) => {
+    const token = await getOpenApiTokenStatus(targetAccount);
+    if (token.configured) {
+      const document = await ensureDailyImageDocument(targetAccount);
+      const context = getStoredUploadContext(targetAccount);
+      if (!document || !context) return false;
+      if (activeAccountRef.current === targetAccount) {
+        setUploadContext(context);
+        setUploadContextInput(context.document_url);
+      }
+      return true;
+    }
+    return Boolean(getStoredUploadContext(targetAccount));
+  }, []);
+
   const uploadOne = useCallback(async (id: string, deferRefresh = false) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || item.status === 'uploading' || item.status === 'success') return null;
@@ -694,6 +710,16 @@ await refreshAccountStatus(item.accountName);
 
   const retryUploadOne = useCallback(async (id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
+    if (!item) return;
+    try {
+      if (!(await prepareUploadContextForAccount(item.accountName))) {
+        showToast('error', `账号“${item.accountName}”没有 Token，也未配置手动上传上下文。`);
+        return;
+      }
+    } catch (error) {
+      showToast('error', `准备当天文档失败：${normalizeError(error)}`);
+      return;
+    }
     const result = await uploadOne(id);
     if (!item || !result) return;
     try {
@@ -705,16 +731,20 @@ await refreshAccountStatus(item.accountName);
     } catch (error) {
       showToast('error', `图片上传成功，但当天文档同步失败：${normalizeError(error)}`);
     }
-  }, [showToast, uploadOne]);
+  }, [prepareUploadContextForAccount, showToast, uploadOne]);
 
   const uploadAll = async () => {
     if (!credentialReady) {
       setView('settings');
       return showToast('error', '请先为当前账号登录语雀并保存会话。');
     }
-    if (!uploadContext) {
-      setView('settings');
-      return showToast('error', '请先为当前账号配置一个有权限的语雀文档作为上传上下文。');
+    try {
+      if (!(await prepareUploadContextForAccount(accountName))) {
+        setView('settings');
+        return showToast('error', '当前账号没有 Token，请先手动配置一个有权限的语雀文档作为上传上下文。');
+      }
+    } catch (error) {
+      return showToast('error', `自动创建当天文档失败：${normalizeError(error)}`);
     }
 
     const pendingItems = queueRef.current.filter(
@@ -841,6 +871,22 @@ await refreshAccountStatus(item.accountName);
           }
           continue;
         }
+        try {
+          if (!(await prepareUploadContextForAccount(account))) {
+            for (const item of accountItems) {
+              const failed = markQueueItem(item.id, {
+                status: 'failed',
+                scheduledAt: null,
+                error: `账号“${account}”没有 Token，也未配置手动上传上下文。`,
+              });
+              if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
+            }
+            continue;
+          }
+        } catch (error) {
+          await rescheduleItems(accountItems, Date.now() + 5 * 60 * 1000, `准备当天文档失败：${normalizeError(error)}`);
+          continue;
+        }
         const accountQuota = await getUploadQuotaStatus(account);
         if (accountQuota.remaining <= 0) {
           const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
@@ -878,7 +924,7 @@ await refreshAccountStatus(item.accountName);
     } finally {
       autoUploadRunningRef.current = false;
     }
-  }, [markQueueItem, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
+  }, [markQueueItem, prepareUploadContextForAccount, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
 
   useEffect(() => {
     if (!queueReady) return undefined;
@@ -1091,7 +1137,7 @@ await refreshAccountStatus(item.accountName);
                   <div><span>UPLOAD QUEUE · {accountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
                   <div className="queue-heading-actions">
                     <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />全部延后 1 小时</button>
-                    <button className="button primary compact" disabled={!credentialReady || !uploadContext || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />立即上传本批</button>
+                    <button className="button primary compact" disabled={!credentialReady || (!uploadContext && !tokenReady) || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />立即上传本批</button>
                   </div>
                 </div>
                 <div className="quota-strip">
@@ -1103,7 +1149,8 @@ await refreshAccountStatus(item.accountName);
                   <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一批自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>本小时额度内会连续处理；超出部分保留到下一额度窗口。应用关闭后会在下次启动补传。</small></div>
                 )}
                 {!credentialReady && <div className="warning">当前账号尚未保存语雀会话；队列可继续添加，但到点后会暂停并提示登录。</div>}
-                {credentialReady && !uploadContext && <div className="warning">当前账号尚未配置上传上下文文档。请在设置中验证一个该账号有权限访问的语雀文档 URL。</div>}
+                {credentialReady && !uploadContext && !tokenReady && <div className="warning">当前账号没有 Token，请在设置中手动验证一个有权限访问的语雀文档 URL。</div>}
+                {credentialReady && !uploadContext && tokenReady && <div className="queue-auto-context-note">首次上传时会自动创建今天日期的 Markdown 文档，并将其绑定为上传上下文。</div>}
                 {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>当前账号的待上传图片会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
