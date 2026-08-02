@@ -101,6 +101,40 @@ jobs:
       - name: Apply backend patch
         run: python3 .github/scripts/apply_image_library_backend.py
 
+      - name: Complete TypeScript call sites
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected one match, found {text.count(old)}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/App.tsx',
+              '''    accountName,
+              category,
+              createdAt: Date.now(),''',
+              '''    accountName,
+              category,
+              tags: [],
+              createdAt: Date.now(),''',
+          )
+          replace_once(
+              'src/App.tsx',
+              'const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);',
+              'const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category, item.tags || []);',
+          )
+          replace_once(
+              'src/components/BatchDocumentUploader.tsx',
+              'const upload = await uploadImage(file, accountName, null, null, folderName);',
+              'const upload = await uploadImage(file, accountName, null, null, folderName, []);',
+          )
+          PY
+
       - name: Format and verify
         run: |
           rustfmt --edition 2021 \
