@@ -78,11 +78,13 @@ export function toStoredQueueItem(item: UploadQueueItem): StoredUploadQueueItem 
     width: item.width,
     height: item.height,
     accountName: item.accountName,
+    uploadAccountName: item.uploadAccountName,
     category: item.category,
     tags: item.tags,
     createdAt: item.createdAt,
     scheduledAt: item.scheduledAt,
     status,
+    result: item.result,
     error: item.error,
   };
 }

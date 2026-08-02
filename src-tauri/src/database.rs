@@ -485,42 +485,45 @@ pub fn cache_stats(path: &Path) -> Result<CacheStats, String> {
 }
 
 pub fn upload_quota_status(path: &Path, account_name: &str) -> Result<UploadQuotaStatus, String> {
+    upload_quota_status_at(path, account_name, unix_timestamp())
+}
+
+fn upload_quota_status_at(
+    path: &Path,
+    account_name: &str,
+    now: i64,
+) -> Result<UploadQuotaStatus, String> {
     let connection = open_connection(path)?;
-    let now = unix_timestamp();
+    let window_start = hourly_window_start(now);
+    let next_reset = window_start + 3_600;
     connection
         .execute(
             "DELETE FROM upload_attempts WHERE attempted_at < ?1",
-            [now - 86_400],
+            [window_start - 86_400],
         )
         .map_err(|error| error.to_string())?;
 
-    let (used, oldest, newest): (i64, Option<i64>, Option<i64>) = connection
+    let used: i64 = connection
         .query_row(
             r#"
-            SELECT COUNT(*), MIN(attempted_at), MAX(attempted_at)
+            SELECT COUNT(*)
             FROM upload_attempts
-            WHERE account_name = ?1 AND attempted_at > ?2
+            WHERE account_name = ?1
+              AND attempted_at >= ?2
+              AND attempted_at < ?3
             "#,
-            params![account_name, now - 3_600],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            params![account_name, window_start, next_reset],
+            |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
 
     let remaining = (UPLOAD_HOURLY_LIMIT - used).max(0);
-    let hourly_wait = if used >= UPLOAD_HOURLY_LIMIT {
-        oldest
-            .map(|value| (value + 3_600 - now).max(1))
-            .unwrap_or(1)
+    let retry_after_seconds = if remaining <= 0 {
+        (next_reset - now).max(1)
     } else {
         0
     };
-    let pacing_wait = newest
-        .map(|value| (value + UPLOAD_MINIMUM_INTERVAL_SECONDS - now).max(0))
-        .unwrap_or(0);
-    let retry_after_seconds = hourly_wait.max(pacing_wait);
-    let reset_at = oldest
-        .and_then(|value| DateTime::<Utc>::from_timestamp(value + 3_600, 0))
-        .map(|value| value.to_rfc3339());
+    let reset_at = DateTime::<Utc>::from_timestamp(next_reset, 0).map(|value| value.to_rfc3339());
 
     Ok(UploadQuotaStatus {
         account_name: account_name.to_string(),
@@ -533,12 +536,24 @@ pub fn upload_quota_status(path: &Path, account_name: &str) -> Result<UploadQuot
     })
 }
 
+fn hourly_window_start(timestamp: i64) -> i64 {
+    timestamp.div_euclid(3_600) * 3_600
+}
+
 pub fn record_upload_attempt(path: &Path, account_name: &str) -> Result<i64, String> {
+    record_upload_attempt_at(path, account_name, unix_timestamp())
+}
+
+fn record_upload_attempt_at(
+    path: &Path,
+    account_name: &str,
+    attempted_at: i64,
+) -> Result<i64, String> {
     let connection = open_connection(path)?;
     connection
         .execute(
             "INSERT INTO upload_attempts (account_name, attempted_at, succeeded) VALUES (?1, ?2, 0)",
-            params![account_name, unix_timestamp()],
+            params![account_name, attempted_at],
         )
         .map_err(|error| error.to_string())?;
     Ok(connection.last_insert_rowid())
@@ -908,14 +923,38 @@ mod tests {
     fn reports_hourly_quota_without_per_image_spacing() {
         let path = temporary_database();
         initialize(&path).unwrap();
-        let before = upload_quota_status(&path, "default").unwrap();
+        let now = 1_800_000_123;
+        let before = upload_quota_status_at(&path, "default", now).unwrap();
         assert_eq!(before.used, 0);
-        let id = record_upload_attempt(&path, "default").unwrap();
+        let id = record_upload_attempt_at(&path, "default", now).unwrap();
         mark_upload_attempt_success(&path, id).unwrap();
-        let after = upload_quota_status(&path, "default").unwrap();
+        let after = upload_quota_status_at(&path, "default", now).unwrap();
         assert_eq!(after.used, 1);
         assert_eq!(after.retry_after_seconds, 0);
         assert_eq!(after.minimum_interval_seconds, 0);
+        cleanup_database(&path);
+    }
+
+    #[test]
+    fn resets_quota_at_the_next_full_hour() {
+        let path = temporary_database();
+        initialize(&path).unwrap();
+        let hour_start = 1_800_000_000;
+        record_upload_attempt_at(&path, "default", hour_start + 3_599).unwrap();
+
+        let before_reset = upload_quota_status_at(&path, "default", hour_start + 3_599).unwrap();
+        assert_eq!(before_reset.used, 1);
+        let expected_reset = DateTime::<Utc>::from_timestamp(hour_start + 3_600, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(
+            before_reset.reset_at.as_deref(),
+            Some(expected_reset.as_str())
+        );
+
+        let after_reset = upload_quota_status_at(&path, "default", hour_start + 3_600).unwrap();
+        assert_eq!(after_reset.used, 0);
+        assert_eq!(after_reset.remaining, UPLOAD_HOURLY_LIMIT);
         cleanup_database(&path);
     }
 }
