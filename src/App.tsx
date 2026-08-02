@@ -85,7 +85,9 @@ import {
 } from './lib/uploadQueueStore';
 import {
   nextHourlyResetTimestamp,
+  NO_TOKEN_MAX_UPLOAD_BYTES,
   prioritizeUploadProfiles,
+  TOKEN_MAX_UPLOAD_BYTES,
   uploadLimitForProfile,
 } from './lib/uploadRouting';
 import type {
@@ -104,8 +106,6 @@ import type {
 const DEFAULT_ACCOUNT = 'default';
 const DEFAULT_CATEGORY = '未分类';
 const EMPTY_CACHE_STATS: CacheStats = { asset_count: 0, cached_count: 0, cache_bytes: 0 };
-const NO_TOKEN_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-const TOKEN_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const QUEUE_PREVIEW_EDGE = 160;
 const QUEUE_PREVIEW_CONCURRENCY = 3;
 const PRIMARY_ACCOUNT_STORAGE_KEY = 'quepic-primary-account';
@@ -1320,16 +1320,16 @@ export default function App() {
                 </div>
                 <div className="quota-strip">
                   <Gauge size={16} />
-                  <span>{accountName === primaryAccountName && quota ? `主账号本整点已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : `主账号 ${primaryAccountName}，从账号 ${accountFailoverEnabled ? '自动接力' : '未启用'}`}</span>
+                  <span>{accountName === primaryAccountName && quota ? `主账号本整点已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : `主账号 ${primaryAccountName}，子账号 ${accountFailoverEnabled ? '自动接力' : '未启用'}`}</span>
                   <b>每小时整点重置</b>
                 </div>
                 {nextScheduledAt && (
                   <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一批自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>所有账号在整点统一进入新额度窗口；应用关闭后会在下次启动补传。</small></div>
                 )}
                 {!primaryCredentialReady && <div className="warning">主账号“{primaryAccountName}”尚未保存语雀会话。</div>}
-                {primaryCredentialReady && !primaryTokenReady && <div className="warning">主账号“{primaryAccountName}”必须配置 OpenAPI Token；从账号可以不配置 Token。</div>}
-                {primaryCredentialReady && primaryTokenReady && <div className="queue-auto-context-note">主账号负责当天文档；主账号额度用满后，已登录且已绑定上传上下文的从账号会自动接力，图片仍统一写入主账号当天文档。</div>}
-                {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>主账号与从账号共同处理的全局上传队列会显示在这里。</p></div> : (
+                {primaryCredentialReady && !primaryTokenReady && <div className="warning">主账号“{primaryAccountName}”必须配置 OpenAPI Token；子账号可以不配置 Token。</div>}
+                {primaryCredentialReady && primaryTokenReady && <div className="queue-auto-context-note">主账号负责当天文档和大图；已登录子账号优先处理不超过 10 MB 的小图，图片链接仍统一写入主账号当天文档。</div>}
+                {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>主账号与子账号共同处理的全局上传队列会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
                       <QueueItemRow key={item.id} item={item} onRetry={retryUploadOne} onCopy={copyText} onRemove={removeQueueItem} />
