@@ -17,6 +17,17 @@ execFileSync('rustfmt', [
   'src-tauri/src/credentials.rs',
 ], { stdio: 'inherit' });
 
+execFileSync('sudo', ['apt-get', 'update', '-qq'], { stdio: 'inherit' });
+execFileSync('sudo', [
+  'apt-get', 'install', '-y', '-qq',
+  'libwebkit2gtk-4.1-dev',
+  'libappindicator3-dev',
+  'librsvg2-dev',
+  'patchelf',
+  'libdbus-1-dev',
+  'pkg-config',
+], { stdio: 'inherit' });
+
 const originalCi = execFileSync(
   'git',
   ['show', 'origin/main:.github/workflows/ci.yml'],
