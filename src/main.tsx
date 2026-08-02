@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { AccountBackupManager } from './components/AccountBackupManager';
+import { UploadLogManager } from './components/UploadLogManager';
 import './styles.css';
 import './preview.css';
 import './yuque-theme.css';
@@ -15,10 +16,12 @@ import './ui-polish.css';
 import './original-viewer.css';
 // 新图库布局必须最后加载，以覆盖旧网格和详情预览规则。
 import './library-overhaul.css';
+import './upload-log.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
     <AccountBackupManager />
+    <UploadLogManager />
   </StrictMode>,
 );
