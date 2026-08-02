@@ -20,7 +20,8 @@ jobs:
         shell: bash
         run: |
           set +e
-          python scripts/apply_original_cache_review_fix.py > /tmp/original-cache-fix.log 2>&1
+          git show 01f2bb1b6080f76b63152dc53f8e67a1350887b8:scripts/apply_original_cache_review_fix.py > /tmp/apply_original_cache_review_fix.py
+          python /tmp/apply_original_cache_review_fix.py > /tmp/original-cache-fix.log 2>&1
           apply_status=$?
           set -e
 
@@ -35,7 +36,7 @@ jobs:
               cat /tmp/original-cache-fix.log
             } > ORIGINAL_CACHE_FIX_ERROR.txt
             git add -A
-            git commit -m "chore: 记录原图缓存修复失败日志"
+            git commit -m "chore: 更新原图缓存修复失败日志"
             git push origin HEAD:feat/yuque-library-token-tier
             exit 0
           fi
