@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const databasePath = 'src-tauri/src/database.rs';
@@ -79,6 +79,41 @@ const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
 packageJson.scripts.build = 'tsc --noEmit && vite build';
 writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 
+// The first build ran before the accounting correction above. Rebuild once with
+// the restored package script so the exact committed frontend is type-checked.
+execFileSync('npm', ['run', 'build'], { stdio: 'inherit' });
+
+const validations = [
+  ['cargo', ['check', '--manifest-path', 'src-tauri/Cargo.toml']],
+  ['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']],
+];
+for (const [command, args] of validations) {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+  if (result.status === 0) {
+    process.stdout.write(result.stdout || '');
+    process.stderr.write(result.stderr || '');
+    continue;
+  }
+
+  const diagnostic = [
+    `command: ${command} ${args.join(' ')}`,
+    `status: ${result.status}`,
+    '',
+    '--- stdout ---',
+    result.stdout || '',
+    '',
+    '--- stderr ---',
+    result.stderr || '',
+  ].join('\n');
+  writeFileSync('primary-failover-validation-error.txt', diagnostic, 'utf8');
+  execFileSync('git', ['config', 'user.name', 'github-actions[bot]']);
+  execFileSync('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
+  execFileSync('git', ['add', 'primary-failover-validation-error.txt']);
+  execFileSync('git', ['commit', '--only', 'primary-failover-validation-error.txt', '-m', 'chore: record primary failover validation error']);
+  execFileSync('git', ['push', 'origin', 'HEAD:feat/primary-account-failover'], { stdio: 'inherit' });
+  throw new Error(`后端验证失败：${command} ${args.join(' ')}`);
+}
+
 const temporaryPaths = [
   '.github/workflows/implement-primary-failover.yml',
   '.github/workflows/inspect-upload-routing.yml',
@@ -86,6 +121,7 @@ const temporaryPaths = [
   'upload-routing-inspection.txt',
   'primary-failover-status.json',
   'primary-failover-failed.log',
+  'primary-failover-validation-error.txt',
   'scripts/.trigger-primary-failover',
   'scripts/patch-primary-failover.py',
   'scripts/sitecustomize.py',
@@ -95,7 +131,3 @@ const temporaryPaths = [
 for (const path of temporaryPaths) {
   if (existsSync(path)) rmSync(path, { force: true });
 }
-
-// The first build ran before the accounting correction above. Rebuild once with
-// the restored package script so the exact committed frontend is type-checked.
-execFileSync('npm', ['run', 'build'], { stdio: 'inherit' });
