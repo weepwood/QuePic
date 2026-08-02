@@ -596,3 +596,99 @@
     margin-left: 24px;
   }
 }
+
+
+/* Persistent folder task + unified settings */
+.batch-doc-task-list li {
+  grid-template-columns: 34px 20px minmax(0, 1fr) auto;
+}
+
+.batch-doc-task-list em {
+  color: #8c8c8c;
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.batch-doc-task-list .task-success em { color: #168f4d; }
+.batch-doc-task-list .task-failed em { color: #cf1322; }
+.batch-doc-task-list .task-uploading { background: #e6f4ff; }
+
+.unified-settings-panel {
+  display: grid;
+  gap: 0;
+}
+
+.settings-section {
+  display: grid;
+  gap: 16px;
+  padding: 22px 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+.settings-section:first-of-type {
+  border-top: 0;
+}
+
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-section-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-section-heading small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.settings-section-heading.compact {
+  align-items: center;
+}
+
+.credential-subsection {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #f0f0f0;
+  border-radius: 14px;
+  background: #fafafa;
+}
+
+.secret-display-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.secret-display-row .field {
+  min-width: 0;
+}
+
+.settings-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.settings-summary-grid > div {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #f0f0f0;
+  border-radius: 14px;
+  background: #fafafa;
+}
+
+@media (max-width: 900px) {
+  .secret-display-row,
+  .settings-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

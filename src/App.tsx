@@ -32,6 +32,7 @@ import {
   Trash2,
   UploadCloud,
   UserRound,
+  Users,
   X,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -39,6 +40,7 @@ import type React from 'react';
 
 import { AssetPreview } from './components/AssetPreview';
 import { BatchDocumentUploader } from './components/BatchDocumentUploader';
+import { YuqueDocumentManager } from './components/YuqueDocumentManager';
 import { OriginalImageViewer } from './components/OriginalImageViewer';
 import {
   appendImagesToDailyDocument,
@@ -51,7 +53,9 @@ import {
   deleteAsset,
   getCacheStats,
   getCredentialStatus,
+  getCookieValue,
   getOpenApiTokenStatus,
+  getOpenApiTokenValue,
     getUploadQuotaStatus,
     getStoredUploadContext,
     listAccountProfiles,
@@ -79,6 +83,13 @@ import {
   saveStoredQueueItems,
   toStoredQueueItem,
 } from './lib/uploadQueueStore';
+import {
+  nextHourlyResetTimestamp,
+  NO_TOKEN_MAX_UPLOAD_BYTES,
+  prioritizeUploadProfiles,
+  TOKEN_MAX_UPLOAD_BYTES,
+  uploadLimitForProfile,
+} from './lib/uploadRouting';
 import type {
   AccountProfile,
   AssetRecord,
@@ -95,11 +106,10 @@ import type {
 const DEFAULT_ACCOUNT = 'default';
 const DEFAULT_CATEGORY = '未分类';
 const EMPTY_CACHE_STATS: CacheStats = { asset_count: 0, cached_count: 0, cache_bytes: 0 };
-const NO_TOKEN_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-const TOKEN_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const QUEUE_PREVIEW_EDGE = 160;
 const QUEUE_PREVIEW_CONCURRENCY = 3;
-const AUTO_UPLOAD_DELAY_MS = 60 * 60 * 1000;
+const PRIMARY_ACCOUNT_STORAGE_KEY = 'quepic-primary-account';
+const ACCOUNT_FAILOVER_STORAGE_KEY = 'quepic-account-failover';
 const IMAGE_EXTENSION = /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
 
 type LibrarySort = 'newest' | 'oldest' | 'name' | 'size' | 'category';
@@ -123,6 +133,7 @@ const QueueItemRow = memo(function QueueItemRow({ item, onRetry, onCopy, onRemov
           {item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}
           {` · ${item.category}`}
         </small>
+        {item.uploadAccountName && <small>实际上传账号：{item.uploadAccountName}</small>}
         {item.status === 'scheduled' && item.scheduledAt && (
           <b className="scheduled-text"><CalendarClock size={13} />{formatScheduleTime(item.scheduledAt)} 自动上传</b>
         )}
@@ -245,6 +256,21 @@ export default function App() {
   const [accountName, setAccountName] = useState(initialAccount);
   const [accountDraft, setAccountDraft] = useState(initialAccount);
   const [accountProfiles, setAccountProfiles] = useState<AccountProfile[]>([]);
+  const [primaryAccountName, setPrimaryAccountName] = useState(
+    () => localStorage.getItem(PRIMARY_ACCOUNT_STORAGE_KEY)?.trim() || initialAccount,
+  );
+  const [accountFailoverEnabled, setAccountFailoverEnabled] = useState(
+    () => localStorage.getItem(ACCOUNT_FAILOVER_STORAGE_KEY) !== 'false',
+  );
+  const [masterKnowledgeBaseUrl, setMasterKnowledgeBaseUrl] = useState(
+    () => localStorage.getItem('quepic-knowledge-base-url') || '',
+  );
+  const [masterDocumentUrl, setMasterDocumentUrl] = useState(
+    () => localStorage.getItem('quepic-document-url') || '',
+  );
+  const [revealedCookie, setRevealedCookie] = useState('');
+  const [revealedToken, setRevealedToken] = useState('');
+  const [secretBusy, setSecretBusy] = useState<'cookie' | 'token' | null>(null);
   const [accountSwitching, setAccountSwitching] = useState(false);
   const [credentialReady, setCredentialReady] = useState(false);
     const [tokenReady, setTokenReady] = useState(false);
@@ -396,6 +422,8 @@ export default function App() {
       localStorage.setItem('quepic-account', nextAccount);
       setAccountName(nextAccount);
       setAccountDraft(nextAccount);
+      setRevealedCookie('');
+      setRevealedToken('');
       const context = getStoredUploadContext(nextAccount);
       setUploadContext(context);
       setUploadContextInput(context?.document_url || '');
@@ -419,6 +447,16 @@ export default function App() {
   useEffect(() => {
     void Promise.all([refreshProfiles(), loadAccountContext(initialAccount)]);
   }, [initialAccount, loadAccountContext, refreshProfiles]);
+
+  useEffect(() => {
+    if (accountProfiles.length === 0) return;
+    if (accountProfiles.some((profile) => profile.account_name === primaryAccountName)) return;
+    const nextPrimary = accountProfiles.find((profile) => profile.token_configured)?.account_name
+      || accountProfiles.find((profile) => profile.credential_configured)?.account_name
+      || accountProfiles[0].account_name;
+    setPrimaryAccountName(nextPrimary);
+    localStorage.setItem(PRIMARY_ACCOUNT_STORAGE_KEY, nextPrimary);
+  }, [accountProfiles, primaryAccountName]);
 
   useEffect(() => {
     let disposed = false;
@@ -496,16 +534,21 @@ export default function App() {
     });
   }, [assets, categoryFilter, librarySort, search, tagFilter]);
 
-  const activeQueue = useMemo(
-    () => queue.filter((item) => item.accountName === accountName),
-    [accountName, queue],
-  );
+  const activeQueue = queue;
   const pendingUploadCount = activeQueue.filter((item) => ['waiting', 'failed', 'scheduled'].includes(item.status)).length;
   const scheduledUploadCount = activeQueue.filter((item) => item.status === 'scheduled').length;
   const nextScheduledAt = activeQueue
     .filter((item) => item.status === 'scheduled' && item.scheduledAt)
     .reduce<number | null>((earliest, item) => earliest === null ? item.scheduledAt : Math.min(earliest, item.scheduledAt || earliest), null);
-  const maxUploadBytes = tokenReady ? TOKEN_MAX_UPLOAD_BYTES : NO_TOKEN_MAX_UPLOAD_BYTES;
+  const primaryProfile = accountProfiles.find((profile) => profile.account_name === primaryAccountName);
+  const primaryCredentialReady = primaryProfile?.credential_configured
+    ?? (primaryAccountName === accountName && credentialReady);
+  const primaryTokenReady = primaryProfile?.token_configured
+    ?? (primaryAccountName === accountName && tokenReady);
+  const fallbackProfiles = accountProfiles.filter(
+    (profile) => profile.account_name !== primaryAccountName && profile.credential_configured,
+  );
+  const maxUploadBytes = primaryTokenReady ? TOKEN_MAX_UPLOAD_BYTES : NO_TOKEN_MAX_UPLOAD_BYTES;
   const maxUploadMegabytes = maxUploadBytes / 1024 / 1024;
   const cachePercent = cacheStats.asset_count > 0
     ? Math.round((cacheStats.cached_count / cacheStats.asset_count) * 100)
@@ -566,10 +609,35 @@ export default function App() {
   const handleClearCredential = async () => {
     try {
       await clearCookie(accountName);
+      setRevealedCookie('');
       await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
       showToast('success', '已清除当前账号的语雀登录凭据。');
     } catch (error) {
       showToast('error', normalizeError(error));
+    }
+  };
+
+  const toggleCookieVisibility = async () => {
+    if (revealedCookie) return setRevealedCookie('');
+    setSecretBusy('cookie');
+    try {
+      setRevealedCookie(await getCookieValue(accountName));
+    } catch (secretError) {
+      showToast('error', normalizeError(secretError));
+    } finally {
+      setSecretBusy(null);
+    }
+  };
+
+  const toggleTokenVisibility = async () => {
+    if (revealedToken) return setRevealedToken('');
+    setSecretBusy('token');
+    try {
+      setRevealedToken(await getOpenApiTokenValue(accountName));
+    } catch (secretError) {
+      showToast('error', normalizeError(secretError));
+    } finally {
+      setSecretBusy(null);
     }
   };
 
@@ -580,6 +648,7 @@ export default function App() {
       const account = await persistAccount();
       await saveOpenApiToken(account, tokenInput.trim());
       setTokenInput('');
+      setRevealedToken('');
       await Promise.all([refreshAccountStatus(account), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已保存到系统密钥库。');
     } catch (error) {
@@ -618,6 +687,7 @@ export default function App() {
     try {
       await clearOpenApiToken(accountName);
       setTokenInput('');
+      setRevealedToken('');
       await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已从系统密钥库清除。');
     } catch (error) {
@@ -650,10 +720,10 @@ export default function App() {
   const addFiles = async (files: File[]) => {
     const accepted = files.filter((file) => isImageFile(file) && file.size > 0 && file.size <= maxUploadBytes);
     if (accepted.length !== files.length) {
-      showToast('error', `已忽略非图片、空文件或超过 ${maxUploadMegabytes} MB 的图片。${tokenReady ? '' : ' 保存 OpenAPI Token 后可上传 50 MB 图片。'}`);
+      showToast('error', `已忽略非图片、空文件或超过 ${maxUploadMegabytes} MB 的图片。${primaryTokenReady ? '' : ' 主账号保存 OpenAPI Token 后可上传 50 MB 图片。'}`);
     }
     if (accepted.length === 0) return;
-    const account = activeAccountRef.current;
+    const account = primaryAccountName;
     const category = uploadCategory.trim() || DEFAULT_CATEGORY;
     const tags = parseTags(uploadTags);
     localStorage.setItem('quepic-upload-category', category);
@@ -681,56 +751,85 @@ export default function App() {
     return updated;
   }, [commitQueue]);
 
-  const prepareUploadContextForAccount = useCallback(async (targetAccount: string) => {
+  const preparePrimaryUploadContext = useCallback(async (targetAccount: string) => {
     const token = await getOpenApiTokenStatus(targetAccount);
-    if (token.configured) {
-      const document = await ensureDailyImageDocument(targetAccount);
-      const context = getStoredUploadContext(targetAccount);
-      if (!document || !context) return false;
-      if (activeAccountRef.current === targetAccount) {
-        setUploadContext(context);
-        setUploadContextInput(context.document_url);
-      }
-      return true;
+    if (!token.configured) return false;
+    const document = await ensureDailyImageDocument(targetAccount);
+    const context = getStoredUploadContext(targetAccount);
+    if (!document || !context) return false;
+    if (activeAccountRef.current === targetAccount) {
+      setUploadContext(context);
+      setUploadContextInput(context.document_url);
     }
-    return Boolean(getStoredUploadContext(targetAccount));
+    return true;
   }, []);
 
-  const uploadOne = useCallback(async (id: string, deferRefresh = false) => {
+  const uploadOne = useCallback(async (
+    id: string,
+    uploadAccountName: string,
+    contextAccountName: string,
+    deferRefresh = false,
+  ) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || item.status === 'uploading' || item.status === 'success') return null;
-    const credential = await getCredentialStatus(item.accountName);
+    if (item.result) {
+      const restored = markQueueItem(id, {
+        status: 'success',
+        uploadAccountName: item.uploadAccountName || uploadAccountName,
+        scheduledAt: null,
+        error: undefined,
+      });
+      if (restored) await saveStoredQueueItem(toStoredQueueItem(restored));
+      return item.result;
+    }
+    const credential = await getCredentialStatus(uploadAccountName);
     if (!credential.configured) {
       const failed = markQueueItem(id, {
         status: 'failed',
+        uploadAccountName,
         scheduledAt: null,
-        error: `账号“${item.accountName}”尚未保存有效语雀会话。`,
+        error: `账号“${uploadAccountName}”尚未保存有效语雀会话。`,
       });
       if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
       return null;
     }
 
-    markQueueItem(id, { status: 'uploading', scheduledAt: null, error: undefined });
+    markQueueItem(id, { status: 'uploading', uploadAccountName, scheduledAt: null, error: undefined });
     try {
-      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category, item.tags || []);
-      markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
-      await removeStoredQueueItem(id);
+      const result = await uploadImage(
+        item.file,
+        uploadAccountName,
+        item.width,
+        item.height,
+        item.category,
+        item.tags || [],
+        contextAccountName,
+      );
+      const succeeded = markQueueItem(id, {
+        status: 'success',
+        result,
+        uploadAccountName,
+        scheduledAt: null,
+        error: undefined,
+      });
+      if (succeeded) await saveStoredQueueItem(toStoredQueueItem(succeeded));
       if (!deferRefresh) {
         await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
-        if (activeAccountRef.current === item.accountName) {
-          await refreshAccountStatus(item.accountName);
+        if (activeAccountRef.current === uploadAccountName) {
+          await refreshAccountStatus(uploadAccountName);
         }
       }
       return result;
     } catch (error) {
       const failed = markQueueItem(id, {
         status: 'failed',
+        uploadAccountName,
         scheduledAt: null,
-        error: normalizeError(error),
+        error: `账号“${uploadAccountName}”上传失败：${normalizeError(error)}`,
       });
       if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
-      if (!deferRefresh && activeAccountRef.current === item.accountName) {
-        await refreshAccountStatus(item.accountName);
+      if (!deferRefresh && activeAccountRef.current === uploadAccountName) {
+        await refreshAccountStatus(uploadAccountName);
       }
       return null;
     }
@@ -762,135 +861,19 @@ export default function App() {
     }
   }, [commitQueue]);
 
-  const retryUploadOne = useCallback(async (id: string) => {
-    const item = queueRef.current.find((candidate) => candidate.id === id);
-    if (!item) return;
-    try {
-      if (!(await prepareUploadContextForAccount(item.accountName))) {
-        showToast('error', `账号“${item.accountName}”没有 Token，也未配置手动上传上下文。`);
-        return;
-      }
-    } catch (error) {
-      showToast('error', `准备当天文档失败：${normalizeError(error)}`);
-      return;
-    }
-    const result = await uploadOne(id);
-    if (!item || !result) return;
-    try {
-      const dailyDocument = await appendImagesToDailyDocument(item.accountName, [{
-        asset_id: result.asset.id,
-        file_name: item.file.name,
-        remote_url: result.asset.remote_url,
-      }]);
-      if (dailyDocument) showToast('success', `图片已写入当天文档“${dailyDocument.title}”。`);
-    } catch (error) {
-      const reason = await persistDailyDocumentSyncFailure([item], error);
-      showToast('error', `图片上传成功，但当天文档同步失败：${reason}`);
-    }
-  }, [persistDailyDocumentSyncFailure, prepareUploadContextForAccount, showToast, uploadOne]);
-
-  const uploadAll = async () => {
-    if (!credentialReady) {
-      setView('settings');
-      return showToast('error', '请先为当前账号登录语雀并保存会话。');
-    }
-    try {
-      if (!(await prepareUploadContextForAccount(accountName))) {
-        setView('settings');
-        return showToast('error', '当前账号没有 Token，请先手动配置一个有权限的语雀文档作为上传上下文。');
-      }
-    } catch (error) {
-      return showToast('error', `自动创建当天文档失败：${normalizeError(error)}`);
-    }
-
-    const pendingItems = queueRef.current.filter(
-      (item) => item.accountName === accountName && ['waiting', 'failed', 'scheduled'].includes(item.status),
-    );
-    if (pendingItems.length === 0) return showToast('error', '当前账号没有等待上传的图片。');
-
-    const scheduleBatch = async (items: UploadQueueItem[], scheduledAt: number, reason: string) => {
-      const ids = new Set(items.map((item) => item.id));
-      const updated: UploadQueueItem[] = [];
-      commitQueue((current) => current.map((item) => {
-        if (!ids.has(item.id)) return item;
-        const next: UploadQueueItem = { ...item, status: 'scheduled', scheduledAt, error: reason };
-        updated.push(next);
-        return next;
-      }));
-      await saveStoredQueueItems(updated.map(toStoredQueueItem));
-    };
-
-    try {
-      const currentQuota = await getUploadQuotaStatus(accountName);
-      setQuota(currentQuota);
-      if (currentQuota.remaining <= 0) {
-        const scheduledAt = resolveRetryTimestamp(currentQuota.reset_at);
-        await scheduleBatch(pendingItems, scheduledAt, '当前小时额度已满，等待下一批');
-        showToast('success', `当前小时额度已用完，${pendingItems.length} 张图片已安排在 ${formatScheduleTime(scheduledAt)} 自动继续。`);
-        return;
-      }
-
-      const immediateItems = pendingItems.slice(0, currentQuota.remaining);
-      const overflowItems = pendingItems.slice(currentQuota.remaining);
-      const dailyImages: DailyDocumentImage[] = [];
-      const dailyItems: UploadQueueItem[] = [];
-      let successCount = 0;
-      for (const item of immediateItems) {
-        const result = await uploadOne(item.id, true);
-        if (result) {
-          successCount += 1;
-          dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
-          dailyItems.push(item);
-        }
-      }
-
-      let scheduledCount = 0;
-      let scheduledAt: number | null = null;
-      if (overflowItems.length > 0) {
-        const refreshedQuota = await getUploadQuotaStatus(accountName);
-        scheduledAt = resolveRetryTimestamp(refreshedQuota.reset_at || currentQuota.reset_at);
-        await scheduleBatch(overflowItems, scheduledAt, '本批额度已用完，等待下一小时自动上传');
-        scheduledCount = overflowItems.length;
-      }
-
-      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles(), refreshAccountStatus(accountName)]);
-      let dailyDocumentTitle = '';
-      let dailyDocumentError = '';
-      if (dailyImages.length > 0) {
-        try {
-          dailyDocumentTitle = (await appendImagesToDailyDocument(accountName, dailyImages))?.title || '';
-        } catch (error) {
-          dailyDocumentError = await persistDailyDocumentSyncFailure(dailyItems, error);
-        }
-      }
-      const summary = [`已立即上传 ${successCount} 张`];
-      if (scheduledCount > 0 && scheduledAt) {
-        summary.push(`${scheduledCount} 张将在 ${formatScheduleTime(scheduledAt)} 自动继续`);
-      }
-      if (dailyDocumentTitle) summary.push(`已写入当天文档“${dailyDocumentTitle}”`);
-      if (dailyDocumentError) {
-        showToast('error', `${summary.join('，')}；当天文档同步失败：${dailyDocumentError}`);
-      } else {
-        showToast('success', summary.join('，'));
-      }
-    } catch (error) {
-      showToast('error', `批量上传失败：${normalizeError(error)}`);
-    }
-  };
-
   const scheduleRemaining = async () => {
-    const scheduledAt = Date.now() + AUTO_UPLOAD_DELAY_MS;
+    const scheduledAt = nextHourlyResetTimestamp();
     const updated: UploadQueueItem[] = [];
     commitQueue((current) => current.map((item) => {
-      if (item.accountName !== accountName || !['waiting', 'failed', 'scheduled'].includes(item.status)) return item;
+      if (!['waiting', 'failed', 'scheduled'].includes(item.status)) return item;
       const next: UploadQueueItem = { ...item, status: 'scheduled', scheduledAt, error: undefined };
       updated.push(next);
       return next;
     }));
-    if (updated.length === 0) return showToast('error', '当前账号没有可计划的剩余图片。');
+    if (updated.length === 0) return showToast('error', '当前队列没有可计划的剩余图片。');
     try {
       await saveStoredQueueItems(updated.map(toStoredQueueItem));
-      showToast('success', `已将 ${updated.length} 张图片整体延后，将在 ${formatScheduleTime(scheduledAt)} 自动上传。`);
+      showToast('success', `已将 ${updated.length} 张图片安排到下一整点 ${formatScheduleTime(scheduledAt)} 自动上传。`);
     } catch (error) {
       showToast('error', normalizeError(error));
     }
@@ -908,74 +891,165 @@ export default function App() {
     await saveStoredQueueItems(updated.map(toStoredQueueItem));
   }, [commitQueue]);
 
+  const resolveRoutingCandidates = useCallback(async (targetPrimary: string) => {
+    const profiles = await listAccountProfiles();
+    const primary = profiles.find((profile) => profile.account_name === targetPrimary);
+    if (!primary?.credential_configured) throw new Error(`主账号“${targetPrimary}”尚未登录语雀。`);
+    if (!primary.token_configured) throw new Error(`主账号“${targetPrimary}”必须配置 OpenAPI Token。`);
+    const eligible = [
+      primary,
+      ...(accountFailoverEnabled
+        ? profiles.filter((profile) => profile.account_name !== targetPrimary && profile.credential_configured)
+        : []),
+    ];
+    const quotas = await Promise.all(eligible.map((profile) => getUploadQuotaStatus(profile.account_name)));
+    return eligible.map((profile, index) => ({ profile, quota: quotas[index] }));
+  }, [accountFailoverEnabled]);
+
+  const processUploadBatch = useCallback(async (items: UploadQueueItem[], announce: boolean) => {
+    const targetPrimary = primaryAccountName.trim() || DEFAULT_ACCOUNT;
+    if (!(await preparePrimaryUploadContext(targetPrimary))) {
+      throw new Error(`主账号“${targetPrimary}”必须配置 Token，才能创建当天文档并作为上传主账号。`);
+    }
+    const candidates = await resolveRoutingCandidates(targetPrimary);
+    const profiles = candidates.map((candidate) => candidate.profile);
+    const quotaRemaining = new Map(
+      candidates.map((candidate) => [candidate.profile.account_name, candidate.quota.remaining]),
+    );
+    const remaining: UploadQueueItem[] = [];
+    const dailyImages: DailyDocumentImage[] = [];
+    const dailyItems: UploadQueueItem[] = [];
+    const routedCounts = new Map<string, number>();
+    let successCount = 0;
+    let deduplicatedCount = 0;
+    let failedCount = 0;
+
+    for (const item of items) {
+      if (item.result) {
+        const result = await uploadOne(
+          item.id,
+          item.uploadAccountName || targetPrimary,
+          targetPrimary,
+          true,
+        );
+        if (!result) {
+          failedCount += 1;
+          remaining.push(item);
+          continue;
+        }
+        successCount += 1;
+        deduplicatedCount += 1;
+        dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
+        dailyItems.push(item);
+        continue;
+      }
+
+      const orderedProfiles = prioritizeUploadProfiles(
+        profiles,
+        targetPrimary,
+        accountFailoverEnabled,
+        item.file.size,
+      );
+      let completed = false;
+      for (const profile of orderedProfiles) {
+        const available = quotaRemaining.get(profile.account_name) ?? 0;
+        if (available <= 0 || item.file.size > uploadLimitForProfile(profile)) continue;
+        const result = await uploadOne(item.id, profile.account_name, targetPrimary, true);
+        if (!result) {
+          quotaRemaining.set(profile.account_name, available - 1);
+          failedCount += 1;
+          continue;
+        }
+        if (!result.deduplicated) quotaRemaining.set(profile.account_name, available - 1);
+        successCount += 1;
+        if (result.deduplicated) deduplicatedCount += 1;
+        routedCounts.set(profile.account_name, (routedCounts.get(profile.account_name) || 0) + 1);
+        dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
+        dailyItems.push(item);
+        completed = true;
+        break;
+      }
+      if (!completed) remaining.push(item);
+    }
+
+    let scheduledAt: number | null = null;
+    if (remaining.length > 0) {
+      scheduledAt = nextHourlyResetTimestamp();
+      await rescheduleItems(remaining, scheduledAt, '当前可用账号额度不足，等待下一整点重置');
+    }
+
+    await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
+    if (activeAccountRef.current) await refreshAccountStatus(activeAccountRef.current);
+
+    let dailyDocumentTitle = '';
+    let dailyDocumentError = '';
+    if (dailyImages.length > 0) {
+      try {
+        const dailyDocument = await appendImagesToDailyDocument(targetPrimary, dailyImages);
+        if (!dailyDocument) throw new Error('主账号当天文档未返回有效结果。');
+        dailyDocumentTitle = dailyDocument.title;
+        await Promise.all(dailyItems.map((item) => removeStoredQueueItem(item.id)));
+      } catch (documentError) {
+        dailyDocumentError = await persistDailyDocumentSyncFailure(dailyItems, documentError);
+      }
+    }
+
+    const summary: string[] = [];
+    if (successCount > 0) summary.push(`成功处理 ${successCount} 张`);
+    if (routedCounts.size > 0) {
+      summary.push(Array.from(routedCounts.entries()).map(([name, count]) => `${name} ${count} 张`).join('、'));
+    }
+    if (deduplicatedCount > 0) summary.push(`${deduplicatedCount} 张复用历史链接`);
+    if (failedCount > 0) summary.push(`${failedCount} 次上传失败`);
+    if (remaining.length > 0 && scheduledAt) summary.push(`${remaining.length} 张将在 ${formatScheduleTime(scheduledAt)} 继续`);
+    if (dailyDocumentTitle) summary.push(`已写入主账号当天文档“${dailyDocumentTitle}”`);
+    const message = summary.join('，') || '没有需要处理的图片。';
+    if (dailyDocumentError) showToast('error', `${message}；当天文档同步失败：${dailyDocumentError}`);
+    else if (announce) showToast(failedCount > 0 ? 'error' : 'success', message);
+  }, [
+    accountFailoverEnabled,
+    persistDailyDocumentSyncFailure,
+    preparePrimaryUploadContext,
+    primaryAccountName,
+    refreshAccountStatus,
+    refreshAssets,
+    refreshCacheStats,
+    refreshProfiles,
+    rescheduleItems,
+    resolveRoutingCandidates,
+    showToast,
+    uploadOne,
+  ]);
+
+  const retryUploadOne = useCallback(async (id: string) => {
+    const item = queueRef.current.find((candidate) => candidate.id === id);
+    if (!item) return;
+    try {
+      await processUploadBatch([item], true);
+    } catch (error) {
+      setView('settings');
+      showToast('error', normalizeError(error));
+    }
+  }, [processUploadBatch, showToast]);
+
+  const uploadAll = async () => {
+    const pendingItems = queueRef.current.filter((item) => ['waiting', 'failed', 'scheduled'].includes(item.status));
+    if (pendingItems.length === 0) return showToast('error', '当前队列没有等待上传的图片。');
+    try {
+      await processUploadBatch(pendingItems, true);
+    } catch (error) {
+      setView('settings');
+      showToast('error', normalizeError(error));
+    }
+  };
+
   const runDueUploads = useCallback(async () => {
     if (autoUploadRunningRef.current) return;
     const due = queueRef.current.filter((item) => item.status === 'scheduled' && (item.scheduledAt || 0) <= Date.now());
     if (due.length === 0) return;
     autoUploadRunningRef.current = true;
     try {
-      const accounts = Array.from(new Set<string>(due.map((item) => item.accountName)));
-      for (const account of accounts) {
-        const accountItems = due.filter((item) => item.accountName === account);
-        const credential = await getCredentialStatus(account);
-        if (!credential.configured) {
-          for (const item of accountItems) {
-            const failed = markQueueItem(item.id, {
-              status: 'failed',
-              scheduledAt: null,
-              error: `账号“${account}”未登录，自动上传已暂停。`,
-            });
-            if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
-          }
-          continue;
-        }
-        try {
-          if (!(await prepareUploadContextForAccount(account))) {
-            for (const item of accountItems) {
-              const failed = markQueueItem(item.id, {
-                status: 'failed',
-                scheduledAt: null,
-                error: `账号“${account}”没有 Token，也未配置手动上传上下文。`,
-              });
-              if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
-            }
-            continue;
-          }
-        } catch (error) {
-          await rescheduleItems(accountItems, Date.now() + 5 * 60 * 1000, `准备当天文档失败：${normalizeError(error)}`);
-          continue;
-        }
-        const accountQuota = await getUploadQuotaStatus(account);
-        if (accountQuota.remaining <= 0) {
-          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
-          await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');
-          continue;
-        }
-        const dailyImages: DailyDocumentImage[] = [];
-        const dailyItems: UploadQueueItem[] = [];
-        for (const item of accountItems.slice(0, accountQuota.remaining)) {
-          const result = await uploadOne(item.id, true);
-          if (result) {
-            dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
-            dailyItems.push(item);
-          }
-        }
-        if (dailyImages.length > 0) {
-          try {
-            await appendImagesToDailyDocument(account, dailyImages);
-          } catch (error) {
-            const reason = await persistDailyDocumentSyncFailure(dailyItems, error);
-            showToast('error', `账号“${account}”图片已上传，但当天文档同步失败：${reason}`);
-          }
-        }
-        const overflow = accountItems.slice(accountQuota.remaining);
-        if (overflow.length > 0) {
-          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
-          await rescheduleItems(overflow, resetAt, '等待下一小时上传额度');
-        }
-      }
-      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
-      if (activeAccountRef.current) await refreshAccountStatus(activeAccountRef.current);
+      await processUploadBatch(due, false);
     } catch (error) {
       const retryAt = Date.now() + 5 * 60 * 1000;
       try {
@@ -987,7 +1061,7 @@ export default function App() {
     } finally {
       autoUploadRunningRef.current = false;
     }
-  }, [markQueueItem, persistDailyDocumentSyncFailure, prepareUploadContextForAccount, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
+  }, [processUploadBatch, rescheduleItems, showToast]);
 
   useEffect(() => {
     if (!queueReady) return undefined;
@@ -1010,7 +1084,7 @@ export default function App() {
   }, [commitQueue, showToast]);
 
   const clearCompletedQueue = () => {
-    const completed = queueRef.current.filter((item) => item.accountName === accountName && item.status === 'success');
+    const completed = queueRef.current.filter((item) => item.status === 'success');
     completed.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     const ids = new Set(completed.map((item) => item.id));
     commitQueue((current) => current.filter((item) => !ids.has(item.id)));
@@ -1130,7 +1204,7 @@ export default function App() {
   ];
 
   const pageInfo: Record<ViewKey, { title: string; description: string }> = {
-    upload: { title: '上传图片', description: '选择上传账号，所有上传结果统一进入共享图库。' },
+    upload: { title: '上传图片', description: '小图优先使用子账号，大图由主账号上传，所有链接统一写入主账号文档。' },
     document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建或更新语雀文档。' },
     library: { title: '共享图片库', description: '集中管理所有账号上传的图片、分类和本地缓存。' },
     settings: { title: '设置', description: '账号仅管理上传身份、语雀会话、Token 与独立额度。' },
@@ -1157,7 +1231,7 @@ export default function App() {
         </div>
         <div className="sidebar-quota-card">
           <Gauge size={15} />
-          <div><strong>{quota ? `${quota.remaining}/${quota.limit}` : '--'} 张可用</strong><small>滚动一小时上传额度</small></div>
+          <div><strong>{quota ? `${quota.remaining}/${quota.limit}` : '--'} 张可用</strong><small>当前账号 · 整点重置额度</small></div>
         </div>
         <div className="credential-summary">
           <span className={credentialReady ? 'dot ready' : 'dot'} />
@@ -1215,7 +1289,7 @@ export default function App() {
                 </div>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
                 <datalist id="tag-options">{availableTags.map((tag) => <option value={tag} key={tag} />)}</datalist>
-                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>140 张/小时</span><span>额度内连续上传</span><span>队列持久化</span></div>
+                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{primaryTokenReady ? '主账号 Token 增强模式' : '主账号基础模式'}</span><span>每账号 140 张/整点小时</span><span>小图子账号优先 · 大图主账号</span><span>队列持久化</span></div>
                 <div className="actions">
                   <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" disabled={!queueReady} onClick={async () => {
@@ -1238,24 +1312,24 @@ export default function App() {
 
               <div className="panel queue-panel">
                 <div className="panel-heading queue-heading">
-                  <div><span>UPLOAD QUEUE · {accountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
+                  <div><span>UPLOAD ROUTER · 主账号 {primaryAccountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
                   <div className="queue-heading-actions">
-                    <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />全部延后 1 小时</button>
-                    <button className="button primary compact" disabled={!credentialReady || (!uploadContext && !tokenReady) || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />立即上传本批</button>
+                    <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />延后到下一整点</button>
+                    <button className="button primary compact" disabled={!primaryCredentialReady || !primaryTokenReady || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />开始智能上传</button>
                   </div>
                 </div>
                 <div className="quota-strip">
                   <Gauge size={16} />
-                  <span>{quota ? `过去一小时已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : '正在读取上传额度'}</span>
-                  {quota?.retry_after_seconds ? <b>{formatDuration(quota.retry_after_seconds)} 后进入下一批</b> : <b>额度内连续上传</b>}
+                  <span>{accountName === primaryAccountName && quota ? `主账号本整点已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : `主账号 ${primaryAccountName}，子账号 ${accountFailoverEnabled ? '自动接力' : '未启用'}`}</span>
+                  <b>每小时整点重置</b>
                 </div>
                 {nextScheduledAt && (
-                  <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一批自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>本小时额度内会连续处理；超出部分保留到下一额度窗口。应用关闭后会在下次启动补传。</small></div>
+                  <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一批自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>所有账号在整点统一进入新额度窗口；应用关闭后会在下次启动补传。</small></div>
                 )}
-                {!credentialReady && <div className="warning">当前账号尚未保存语雀会话；队列可继续添加，但到点后会暂停并提示登录。</div>}
-                {credentialReady && !uploadContext && !tokenReady && <div className="warning">当前账号没有 Token，请在设置中手动验证一个有权限访问的语雀文档 URL。</div>}
-                {credentialReady && !uploadContext && tokenReady && <div className="queue-auto-context-note">首次上传时会自动创建今天日期的 Markdown 文档，并将其绑定为上传上下文。</div>}
-                {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>当前账号的待上传图片会显示在这里。</p></div> : (
+                {!primaryCredentialReady && <div className="warning">主账号“{primaryAccountName}”尚未保存语雀会话。</div>}
+                {primaryCredentialReady && !primaryTokenReady && <div className="warning">主账号“{primaryAccountName}”必须配置 OpenAPI Token；子账号可以不配置 Token。</div>}
+                {primaryCredentialReady && primaryTokenReady && <div className="queue-auto-context-note">主账号负责当天文档和大图；已登录子账号优先处理不超过 10 MB 的小图，图片链接仍统一写入主账号当天文档。</div>}
+                {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>主账号与子账号共同处理的全局上传队列会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
                       <QueueItemRow key={item.id} item={item} onRetry={retryUploadOne} onCopy={copyText} onRemove={removeQueueItem} />
@@ -1269,9 +1343,15 @@ export default function App() {
             </div>
           )}
 
-          {view === 'document' && (
-            <BatchDocumentUploader accountName={accountName} onUploaded={() => void Promise.all([refreshAssets(), refreshCacheStats(), refreshAccountStatus(), refreshProfiles()])} />
-          )}
+          <div style={{ display: view === 'document' ? 'block' : 'none' }}>
+            <BatchDocumentUploader
+              primaryAccountName={primaryAccountName}
+              accountFailoverEnabled={accountFailoverEnabled}
+              knowledgeBaseUrl={masterKnowledgeBaseUrl}
+              documentUrl={masterDocumentUrl}
+              onUploaded={() => void Promise.all([refreshAssets(), refreshCacheStats(), refreshAccountStatus(), refreshProfiles()])}
+            />
+          </div>
 
           {view === 'library' && (
             <div className="library-layout">
@@ -1393,79 +1473,102 @@ export default function App() {
           {view === 'settings' && (
             <div className="settings-layout">
               <div className="settings-stack">
-                <div className="panel settings-panel account-manager-panel">
-                  <div className="panel-heading"><div><span>UPLOAD IDENTITIES</span><h2>上传账号管理</h2><p>账号分别保存凭据、Token 和上传额度；所有账号共同使用下方同一个图片库。</p></div><UserRound size={20} /></div>
-                  <div className="account-create-row">
-                    <label className="field"><span>账号名称</span><input value={accountDraft} onChange={(event) => setAccountDraft(event.target.value)} list="account-options" placeholder="例如：个人、工作" /></label>
-                    <datalist id="account-options">{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name} />)}</datalist>
-                    <button className="button primary" disabled={accountSwitching || !accountDraft.trim()} onClick={() => void handleSwitchAccount(accountDraft)}>{accountSwitching ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}添加或切换</button>
+                <div className="panel settings-panel unified-settings-panel">
+                  <div className="panel-heading">
+                    <div><span>UNIFIED CONFIGURATION</span><h2>账号与应用设置</h2><p>账号、主子关系、凭据、Token、目标知识库和缓存统一在这里管理。</p></div>
+                    <Settings size={20} />
                   </div>
-                  <div className="account-profile-grid">
-                    {accountProfiles.map((profile) => (
-                      <button key={profile.account_name} className={profile.account_name === accountName ? 'account-profile active' : 'account-profile'} onClick={() => void handleSwitchAccount(profile.account_name)}>
-                        <strong>{profile.account_name}</strong><small>{profile.asset_count} 条来源记录 · {profile.cached_count} 张已缓存</small><span>{profile.credential_configured ? '已登录' : '未登录'} · {profile.token_configured ? 'Token 已配置' : 'Token 未配置'}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
 
-                <div className="panel settings-panel">
-                  <div className="panel-heading"><div><span>YUQUE ACCOUNT</span><h2>语雀登录</h2><p>当前账号：{accountName}。登录会话用于上传图片和私有图片回源。</p></div><div className={credentialReady ? 'status ready-status' : 'status'}>{credentialReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{credentialReady ? '已连接' : '未连接'}</div></div>
-                  <div className="actions">
-                    <button className="button primary" disabled={loginBusy} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
-                    <button className="button secondary" disabled={loginBusy} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
-                    <button className="button danger" disabled={!credentialReady} onClick={() => void handleClearCredential()}><Trash2 size={17} />清除登录凭据</button>
-                  </div>
-                  <details>
-                    <summary>高级：手动粘贴 Cookie</summary>
-                    <label className="field"><span>完整 Cookie</span><textarea value={cookieInput} onChange={(event) => setCookieInput(event.target.value)} rows={6} placeholder="从 /api/upload/attach 请求头复制完整 Cookie 值" /><small>长 Cookie 会自动拆分成多个系统密钥库条目。</small></label>
-                    <button className="button secondary" disabled={loginBusy || !cookieInput.trim()} onClick={() => void handleManualCookieSave()}><ShieldCheck size={17} />手动安全保存</button>
-                  </details>
-                </div>
+                  <section className="settings-section">
+                    <div className="settings-section-heading"><div><strong>账号与角色</strong><small>主账号负责 Token、文档和大图；子账号只需要 Cookie。</small></div><UserRound size={18} /></div>
+                    <div className="account-create-row">
+                      <label className="field"><span>账号名称</span><input value={accountDraft} onChange={(event) => setAccountDraft(event.target.value)} list="account-options" placeholder="例如：主账号、子账号 1" /></label>
+                      <datalist id="account-options">{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name} />)}</datalist>
+                      <button className="button primary" disabled={accountSwitching || !accountDraft.trim()} onClick={() => void handleSwitchAccount(accountDraft)}>{accountSwitching ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}添加或切换</button>
+                    </div>
+                    <div className="account-profile-grid">
+                      {accountProfiles.map((profile) => (
+                        <button key={profile.account_name} className={profile.account_name === accountName ? 'account-profile active' : 'account-profile'} onClick={() => void handleSwitchAccount(profile.account_name)}>
+                          <strong>{profile.account_name}{profile.account_name === primaryAccountName ? ' · 主账号' : ' · 子账号'}</strong>
+                          <small>{profile.asset_count} 条来源记录 · {profile.cached_count} 张已缓存</small>
+                          <span>{profile.credential_configured ? 'Cookie 已配置' : 'Cookie 未配置'} · {profile.account_name === primaryAccountName ? (profile.token_configured ? 'Token 已配置' : 'Token 缺失') : '无需 Token'}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <label className="field"><span>主账号</span><select value={primaryAccountName} onChange={(event) => { const value = event.target.value; setPrimaryAccountName(value); localStorage.setItem(PRIMARY_ACCOUNT_STORAGE_KEY, value); }}>{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name}>{profile.account_name}{profile.token_configured ? ' · Token' : ''}</option>)}</select><small>主账号必须登录并配置 Token；其他账号自动视为子账号。</small></label>
+                    <label className="toggle-row">
+                      <span><Users size={17} /><span><strong>启用子账号小图接力</strong><small>不超过 10 MB 的图片优先使用子账号；大图只使用主账号。</small></span></span>
+                      <input className="switch-input" type="checkbox" checked={accountFailoverEnabled} onChange={(event) => { setAccountFailoverEnabled(event.target.checked); localStorage.setItem(ACCOUNT_FAILOVER_STORAGE_KEY, String(event.target.checked)); }} />
+                    </label>
+                    <p className="panel-note">子账号顺序：{fallbackProfiles.length ? fallbackProfiles.map((profile) => profile.account_name).join(' → ') : '暂无已登录子账号'}。子账号不需要 Token，也不需要配置或访问文档。</p>
+                  </section>
 
-                <div className="panel settings-panel token-panel">
-                  <div className="panel-heading"><div><span>YUQUE OPENAPI</span><h2>OpenAPI Token</h2><p>用于读取和管理知识库、创建文件夹文档，并将单图上限从 10 MB 提升到 50 MB。</p></div><div className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{tokenReady ? '50 MB 模式' : '10 MB 模式'}</div></div>
-                  <label className="field"><span>Token</span><input type="password" autoComplete="off" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder={tokenReady ? '输入新 Token 可覆盖现有配置' : '粘贴语雀 OpenAPI Token'} /><small>Token 不写入 localStorage、SQLite 或前端配置文件。</small></label>
-                  <div className="actions">
-                    <button className="button primary" disabled={tokenBusy || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}安全保存 Token</button>
-                    <button className="button danger" disabled={tokenBusy || !tokenReady} onClick={() => void handleClearToken()}><Trash2 size={17} />清除 Token</button>
-                  </div>
-                </div>
+                  <section className="settings-section">
+                    <div className="settings-section-heading"><div><strong>当前账号凭据：{accountName}</strong><small>敏感内容默认隐藏，仅在点击显示时从系统密钥库读取。</small></div><KeyRound size={18} /></div>
+                    <div className="actions">
+                      <button className="button primary" disabled={loginBusy} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
+                      <button className="button secondary" disabled={loginBusy} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
+                      <button className="button danger" disabled={!credentialReady} onClick={() => void handleClearCredential()}><Trash2 size={17} />清除 Cookie</button>
+                    </div>
+                    <div className="secret-display-row">
+                      <label className="field"><span>Cookie</span><input readOnly type={revealedCookie ? 'text' : 'password'} value={revealedCookie || (credentialReady ? '已保存在系统密钥库' : '')} placeholder="尚未配置 Cookie" /></label>
+                      <button className="button secondary compact" disabled={!credentialReady || secretBusy === 'cookie'} onClick={() => void toggleCookieVisibility()}>{secretBusy === 'cookie' ? <LoaderCircle className="spin" size={15} /> : <KeyRound size={15} />}{revealedCookie ? '隐藏' : '显示'}</button>
+                      <button className="button secondary compact" disabled={!revealedCookie} onClick={() => void copyText(revealedCookie)}><Copy size={15} />复制</button>
+                    </div>
+                    <details>
+                      <summary>手动粘贴 Cookie</summary>
+                      <label className="field"><span>完整 Cookie</span><textarea value={cookieInput} onChange={(event) => setCookieInput(event.target.value)} rows={5} placeholder="从语雀上传请求中复制 Cookie" /></label>
+                      <button className="button secondary" disabled={loginBusy || !cookieInput.trim()} onClick={() => void handleManualCookieSave()}><Save size={17} />保存 Cookie</button>
+                    </details>
 
-                <div className="panel settings-panel upload-context-panel">
-                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>每个账号绑定自己有权限的语雀文档，作为图片上传的文档上下文。</p></div><ExternalLink size={20} /></div>
-                <label className="field"><span>语雀文档 URL</span><input type="url" value={uploadContextInput} onChange={(event) => setUploadContextInput(event.target.value)} placeholder="https://www.yuque.com/账号/知识库/文档" /><small>{tokenReady ? '使用 OpenAPI Token 验证并解析文档 ID。' : '未配置 Token 时，使用当前登录会话读取文档页面并解析 ID。'}本地只保存文档 URL、ID 和标题。</small></label>
-                {uploadContext && <p className="panel-note">已绑定：{uploadContext.title} · 文档 ID {uploadContext.attachable_id}</p>}
-                <div className="actions">
-                  <button className="button primary" disabled={uploadContextBusy || !credentialReady || !uploadContextInput.trim()} onClick={() => void handleSaveUploadContext()}>{uploadContextBusy ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并保存</button>
-                  <button className="button danger" disabled={uploadContextBusy || !uploadContext} onClick={handleClearUploadContext}><Trash2 size={17} />清除上下文</button>
+                    {accountName === primaryAccountName ? (
+                      <div className="credential-subsection">
+                        <div className="settings-section-heading compact"><div><strong>主账号 OpenAPI Token</strong><small>用于创建和写入文档，并允许主账号上传 50 MB 图片。</small></div><span className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? '已配置' : '未配置'}</span></div>
+                        <label className="field"><span>更新 Token</span><input type="password" autoComplete="off" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder={tokenReady ? '输入新 Token 可覆盖' : '粘贴语雀 OpenAPI Token'} /></label>
+                        <div className="actions">
+                          <button className="button primary" disabled={tokenBusy || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存 Token</button>
+                          <button className="button danger" disabled={tokenBusy || !tokenReady} onClick={() => void handleClearToken()}><Trash2 size={17} />清除 Token</button>
+                        </div>
+                        <div className="secret-display-row">
+                          <label className="field"><span>当前 Token</span><input readOnly type={revealedToken ? 'text' : 'password'} value={revealedToken || (tokenReady ? '已保存在系统密钥库' : '')} placeholder="尚未配置 Token" /></label>
+                          <button className="button secondary compact" disabled={!tokenReady || secretBusy === 'token'} onClick={() => void toggleTokenVisibility()}>{secretBusy === 'token' ? <LoaderCircle className="spin" size={15} /> : <KeyRound size={15} />}{revealedToken ? '隐藏' : '显示'}</button>
+                          <button className="button secondary compact" disabled={!revealedToken} onClick={() => void copyText(revealedToken)}><Copy size={15} />复制</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="queue-auto-context-note">当前账号是子账号，只需保存 Cookie，不需要 Token，也不需要设置文档权限。</div>
+                    )}
+                  </section>
+
+                  <section className="settings-section">
+                    <div className="settings-section-heading"><div><strong>主账号文档目标</strong><small>文件夹转文档只读取这里的配置，不再重复填写 URL。</small></div><ExternalLink size={18} /></div>
+                    <YuqueDocumentManager
+                      accountName={primaryAccountName}
+                      tokenReady={primaryTokenReady}
+                      disabled={!primaryTokenReady}
+                      knowledgeBaseUrl={masterKnowledgeBaseUrl}
+                      documentUrl={masterDocumentUrl}
+                      onKnowledgeBaseUrlChange={(value) => { setMasterKnowledgeBaseUrl(value); if (value.trim()) localStorage.setItem('quepic-knowledge-base-url', value.trim()); else localStorage.removeItem('quepic-knowledge-base-url'); }}
+                      onDocumentUrlChange={(value) => { setMasterDocumentUrl(value); if (value.trim()) localStorage.setItem('quepic-document-url', value.trim()); else localStorage.removeItem('quepic-document-url'); }}
+                    />
+                    {!primaryProfile?.credential_configured && <div className="warning">主账号尚未保存 Cookie。</div>}
+                    {primaryProfile?.credential_configured && !primaryProfile.token_configured && <div className="warning">主账号必须配置 Token 后才能管理目标文档。</div>}
+                  </section>
+
+                  <section className="settings-section settings-summary-grid">
+                    <div>
+                      <div className="settings-section-heading compact"><div><strong>当前账号整点额度</strong><small>每个账号独立计算，整点自动重置。</small></div><Gauge size={18} /></div>
+                      <div className="quota-metrics"><div><strong>{quota?.used ?? 0}</strong><small>本小时尝试</small></div><div><strong>{quota?.remaining ?? 140}</strong><small>剩余额度</small></div><div><strong>{accountName === primaryAccountName ? '50 MB' : '10 MB'}</strong><small>单图上限</small></div></div>
+                    </div>
+                    <div>
+                      <div className="settings-section-heading compact"><div><strong>本地预览缓存</strong><small>只保留统一缓存清理功能。</small></div><HardDrive size={18} /></div>
+                      <div className="cache-metrics"><div><Database size={17} /><strong>{cacheStats.cached_count}/{cacheStats.asset_count}</strong><small>已缓存图片</small></div><div><HardDrive size={17} /><strong>{formatBytes(cacheStats.cache_bytes)}</strong><small>缓存占用</small></div></div>
+                      <button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理共享缓存</button>
+                    </div>
+                  </section>
                 </div>
               </div>
-
-              <div className="panel settings-panel quota-panel">
-                  <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传批次与额度</h2><p>当前小时额度内连续上传；额度用完后，剩余任务自动进入下一批。</p></div><Gauge size={20} /></div>
-                  <div className="quota-metrics">
-                    <div><strong>{quota?.used ?? 0}</strong><small>过去一小时尝试</small></div>
-                    <div><strong>{quota?.remaining ?? 140}</strong><small>剩余额度</small></div>
-                    <div><strong>连续</strong><small>额度内立即上传</small></div>
-                  </div>
-                  <p className="panel-note">不再对每张图片设置固定秒级等待。失败请求仍计入本地小时额度；无 Token 单图上限 10 MB，保存 Token 后为 50 MB。超出当前额度的队列任务会自动安排到下一窗口。</p>
-                </div>
-
-                <div className="panel settings-panel cache-panel">
-                  <div className="panel-heading"><div><span>PREVIEW CACHE</span><h2>图片显示与缓存</h2><p>本地缓存 → 已上传 URL 限速缩略图 → 语雀会话回源 → 可选兼容代理。</p></div><HardDrive size={20} /></div>
-                  <div className="cache-metrics">
-                    <div><Database size={17} /><strong>{cacheStats.cached_count}/{cacheStats.asset_count}</strong><small>已缓存图片</small></div>
-                    <div><HardDrive size={17} /><strong>{formatBytes(cacheStats.cache_bytes)}</strong><small>缓存占用</small></div>
-                  </div>
-                  <label className="toggle-row">
-                    <span><Globe2 size={17} /><span><strong>WordPress CDN 兼容兜底</strong><small>仅在本地、远程 URL 和语雀回源均失败时使用 `i3.wp.com`。</small></span></span>
-                    <input className="switch-input" type="checkbox" checked={allowWordpressFallback} onChange={(event) => handleWordpressFallbackChange(event.target.checked)} />
-                  </label>
-                  <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理共享图库缓存</button></div>
-                </div>
-              </div>
-              <div className="guide"><ShieldCheck size={24} /><div><h3>共享图库策略</h3><ol><li>所有账号上传的图片统一进入同一个本地图库与分类体系。</li><li>每条记录保留来源账号，私有图片优先使用来源账号会话回源。</li><li>上传队列、Cookie、Token 和小时额度仍按账号隔离。</li><li>切换账号只改变新的上传身份，不影响图库筛选和当前选择。</li><li>共享缓存只保存一份，可在设置中统一清理和重建。</li></ol></div></div>
+              <div className="guide"><ShieldCheck size={24} /><div><h3>简化后的工作方式</h3><ol><li>主账号只配置一次 Cookie、Token 和文档目标。</li><li>子账号只保存 Cookie，小图自动优先使用子账号额度。</li><li>大图始终使用主账号，所有图片链接统一写入主账号文档。</li><li>普通上传和文件夹转文档共享同一套整点配额与账号路由。</li><li>文件夹任务在页面切换后继续运行并保留状态。</li></ol></div></div>
             </div>
           )}
         </section>
@@ -1496,11 +1599,12 @@ function formatResetTime(value: string | null): string {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+
 function resolveRetryTimestamp(value: string | null): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed)
-    ? Math.max(parsed + 1_000, Date.now() + 60_000)
-    : Date.now() + AUTO_UPLOAD_DELAY_MS;
+    ? Math.max(parsed + 1_000, Date.now() + 1_000)
+    : nextHourlyResetTimestamp();
 }
 
 function formatScheduleTime(value: number): string {
