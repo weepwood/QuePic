@@ -1,9 +1,8 @@
 name: Implement primary account failover
 
 on:
-  push:
-    branches: [feat/primary-account-failover]
-    paths: [.github/workflows/implement-primary-failover.yml]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -20,6 +19,8 @@ jobs:
         run: |
           python scripts/patch-primary-failover.py
           rm -f .github/workflows/implement-primary-failover.yml
+          rm -f .github/workflows/snapshot-primary-failover.yml
+          rm -f primary-failover-status.json primary-failover-failed.log
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
