@@ -355,8 +355,16 @@ fn validate_portable_settings(settings: &PortableSettings) -> Result<(), String>
     validate_setting_text("主账号", &settings.primary_account, 80)?;
     validate_setting_text("上传分类", &settings.upload_category, 80)?;
     validate_setting_text("旧知识库 ID", &settings.book_id, 256)?;
-    validate_setting_text("知识库地址", &settings.knowledge_base_url, MAX_SETTING_TEXT_BYTES)?;
-    validate_setting_text("目标文档地址", &settings.document_url, MAX_SETTING_TEXT_BYTES)?;
+    validate_setting_text(
+        "知识库地址",
+        &settings.knowledge_base_url,
+        MAX_SETTING_TEXT_BYTES,
+    )?;
+    validate_setting_text(
+        "目标文档地址",
+        &settings.document_url,
+        MAX_SETTING_TEXT_BYTES,
+    )?;
     validate_setting_text("上传标签", &settings.upload_tags, MAX_SETTING_TEXT_BYTES)?;
     if !matches!(settings.library_view.as_str(), "" | "original" | "square") {
         return Err("备份中的图库显示模式无效。".into());
@@ -382,12 +390,18 @@ fn validate_setting_text(name: &str, value: &str, maximum: usize) -> Result<(), 
     Ok(())
 }
 
-fn validate_yuque_setting_url(name: &str, value: &str, require_document: bool) -> Result<(), String> {
+fn validate_yuque_setting_url(
+    name: &str,
+    value: &str,
+    require_document: bool,
+) -> Result<(), String> {
     if value.trim().is_empty() {
         return Ok(());
     }
     let parsed = url::Url::parse(value).map_err(|_| format!("备份中的{name}无效。"))?;
-    if parsed.scheme() != "https" || !matches!(parsed.host_str(), Some("yuque.com" | "www.yuque.com")) {
+    if parsed.scheme() != "https"
+        || !matches!(parsed.host_str(), Some("yuque.com" | "www.yuque.com"))
+    {
         return Err(format!("备份中的{name}必须是 HTTPS 语雀地址。"));
     }
     let segment_count = parsed.path_segments().map(Iterator::count).unwrap_or(0);
