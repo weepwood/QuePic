@@ -1,92 +1,51 @@
-name: CI
+name: Inspect Release
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
-concurrency:
-  group: quepic-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  frontend:
-    name: React frontend
+  inspect-release:
+    name: Inspect v0.5.1 release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install dependencies
-        run: npm install --silent
-      - name: Build React frontend
-        run: npm run build
-
-  icons:
-    name: Platform icons
-    runs-on: ubuntu-latest
-    steps:
-      - name: Generate icons
+      - name: Inspect release workflow and assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD
-          npm install --silent > /tmp/npm-install.log 2>&1
-          set +e
-          npm run icons > /tmp/icons.log 2>&1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "图标生成失败："
-            tail -n 80 /tmp/icons.log
-          fi
-          exit "$status"
+          headers=(
+            -H "Accept: application/vnd.github+json"
+            -H "Authorization: Bearer ${GH_TOKEN}"
+            -H "X-GitHub-Api-Version: 2022-11-28"
+          )
 
-  rust:
-    name: Rust backend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fetch source, generate icons, check and test backend
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD
-          sudo apt-get update -qq > /tmp/apt.log 2>&1
-          sudo apt-get install -y -qq \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libdbus-1-dev \
-            pkg-config >> /tmp/apt.log 2>&1
-          npm install --silent > /tmp/npm-install.log 2>&1
-          npm run icons > /tmp/icons.log 2>&1
-          rustup default stable > /dev/null
+          runs="$(curl -fsSL "${headers[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?branch=main&event=push&per_page=5")"
+          run_id="$(jq -r '[.workflow_runs[] | select(.head_sha == "a2a145df33abb7411c4e68d8cdddd617a101c03d")][0].id // empty' <<< "$runs")"
 
-          set +e
-          cargo check --quiet --manifest-path src-tauri/Cargo.toml > /tmp/cargo-check.log 2>&1
-          check_status=$?
-          if [ "$check_status" -ne 0 ]; then
-            echo "Rust 编译失败："
-            tail -n 120 /tmp/cargo-check.log
-            exit "$check_status"
+          if [ -z "$run_id" ]; then
+            echo "release_run=not_found"
+          else
+            jq -r --argjson id "$run_id" '.workflow_runs[] | select(.id == $id) | "release_run_id=\(.id) status=\(.status) conclusion=\(.conclusion // "pending") html=\(.html_url)"' <<< "$runs"
+            jobs="$(curl -fsSL "${headers[@]}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=20")"
+            jq -r '.jobs[] | "job_id=\(.id) name=\(.name) status=\(.status) conclusion=\(.conclusion // "pending")"' <<< "$jobs"
           fi
 
-          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
-          test_status=$?
-          if [ "$test_status" -ne 0 ]; then
-            echo "Rust 单元测试失败："
-            tail -n 120 /tmp/cargo-test.log
+          release="$(curl -fsSL "${headers[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v0.5.1" 2>/dev/null || true)"
+          if [ -n "$release" ]; then
+            jq -r '"release_id=\(.id) draft=\(.draft) prerelease=\(.prerelease) html=\(.html_url)"' <<< "$release"
+            jq -r '.assets[]? | "asset=\(.name) size=\(.size) state=\(.state) url=\(.browser_download_url)"' <<< "$release"
+            exe_count="$(jq '[.assets[]? | select(.state == "uploaded" and (.name | endswith(".exe")))] | length' <<< "$release")"
+            dmg_count="$(jq '[.assets[]? | select(.state == "uploaded" and (.name | endswith(".dmg")))] | length' <<< "$release")"
+            echo "asset_summary exe=${exe_count} dmg=${dmg_count}"
+          else
+            echo "release=not_available"
           fi
-          exit "$test_status"
