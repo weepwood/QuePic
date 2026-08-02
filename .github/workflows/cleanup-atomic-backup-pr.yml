@@ -1,0 +1,45 @@
+name: Cleanup atomic backup PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.head_ref == 'fix/atomic-backup-restore'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Keep only intentional source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          while IFS= read -r path; do
+            case "$path" in
+              src-tauri/src/accounts.rs|src-tauri/src/backup.rs|src-tauri/src/lib.rs|.github/workflows/cleanup-atomic-backup-pr.yml)
+                ;;
+              *)
+                if git cat-file -e "origin/main:$path" 2>/dev/null; then
+                  git checkout origin/main -- "$path"
+                else
+                  rm -f -- "$path"
+                fi
+                ;;
+            esac
+          done < <(git diff --name-only origin/main...HEAD)
+
+          rm .github/workflows/cleanup-atomic-backup-pr.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: 移除备份修复中的无关生成变更"
+          git push origin HEAD:fix/atomic-backup-restore
