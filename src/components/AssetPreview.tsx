@@ -34,14 +34,14 @@ export function AssetPreview({
   const [src, setSrc] = useState<string | null>(null);
   const [source, setSource] = useState<string>(asset.preview_source || 'missing');
   const [retryNonce, setRetryNonce] = useState(0);
+  const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
 
   const storedPath = useMemo(() => {
     if (preferOriginal) return asset.original_path || asset.thumbnail_path;
     return asset.thumbnail_path || asset.original_path;
   }, [asset.original_path, asset.thumbnail_path, preferOriginal]);
-  const aspectRatio = preserveAspectRatio && asset.width && asset.height
-    ? `${asset.width} / ${asset.height}`
-    : undefined;
+  const recordedRatio = asset.width && asset.height ? `${asset.width} / ${asset.height}` : null;
+  const aspectRatio = preserveAspectRatio ? recordedRatio || naturalRatio || undefined : undefined;
 
   useEffect(() => {
     if (preferOriginal) {
@@ -71,6 +71,7 @@ export function AssetPreview({
     setSrc(null);
     setState('idle');
     setSource(asset.preview_source || 'missing');
+    setNaturalRatio(null);
   }, [asset.id, asset.preview_source, cacheEpoch, preferOriginal]);
 
   useEffect(() => {
@@ -132,7 +133,20 @@ export function AssetPreview({
       className={`asset-preview ${preserveAspectRatio ? 'preserve-ratio' : ''} ${className}`.trim()}
       style={aspectRatio ? { aspectRatio } : undefined}
     >
-      {src && <img src={src} alt={asset.file_name} onError={retryAfterImageError} />}
+      {src && (
+        <img
+          src={src}
+          alt={asset.file_name}
+          onLoad={(event) => {
+            if (!preserveAspectRatio || recordedRatio) return;
+            const image = event.currentTarget;
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              setNaturalRatio(`${image.naturalWidth} / ${image.naturalHeight}`);
+            }
+          }}
+          onError={retryAfterImageError}
+        />
+      )}
       {!src && state === 'loading' && <LoaderCircle className="spin preview-state-icon" size={24} />}
       {!src && state === 'failed' && (
         <button className="preview-retry" type="button" onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
