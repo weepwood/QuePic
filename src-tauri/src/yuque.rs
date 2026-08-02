@@ -189,13 +189,12 @@ fn build_upload_url(cookie: &str, attachable_id: Option<i64>) -> Result<Url, Str
         Url::parse(UPLOAD_ENDPOINT).map_err(|error| format!("语雀上传地址无效：{error}"))?;
     {
         let mut query = url.query_pairs_mut();
+        query.append_pair("attachable_type", "Doc");
         if let Some(attachable_id) = attachable_id {
             if attachable_id <= 0 {
                 return Err("上传上下文文档 ID 无效，请重新验证文档 URL。".into());
             }
-            query
-                .append_pair("attachable_type", "Doc")
-                .append_pair("attachable_id", &attachable_id.to_string());
+            query.append_pair("attachable_id", &attachable_id.to_string());
         }
         query
             .append_pair("type", "image")
@@ -468,7 +467,10 @@ mod tests {
         let query = url
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
-        assert!(!query.contains_key("attachable_type"));
+        assert_eq!(
+            query.get("attachable_type").map(|value| value.as_ref()),
+            Some("Doc")
+        );
         assert!(!query.contains_key("attachable_id"));
         assert_eq!(query.get("type").map(|value| value.as_ref()), Some("image"));
         assert_eq!(query.get("ocr").map(|value| value.as_ref()), Some("off"));
