@@ -1,2 +1,2 @@
 validate primary-account failover implementation
-trigger: pr-ci
+trigger: ready-pr-ci
