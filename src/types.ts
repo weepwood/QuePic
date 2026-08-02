@@ -32,6 +32,7 @@ export interface SaveOriginalResult {
 }
 
 export interface DailyDocumentImage {
+  asset_id: number;
   file_name: string;
   remote_url: string;
 }

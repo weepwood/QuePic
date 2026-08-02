@@ -18,6 +18,7 @@ import type {
 } from '../types';
 
 const UPLOAD_CONTEXT_PREFIX = 'quepic-upload-context:';
+const dailyDocumentRequests = new Map<string, Promise<YuqueDocumentResult | null>>();
 
 function uploadContextKey(accountName: string): string {
   return `${UPLOAD_CONTEXT_PREFIX}${encodeURIComponent(accountName.trim())}`;
@@ -246,7 +247,7 @@ function escapeMarkdownAlt(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
 }
 
-export async function ensureDailyImageDocument(
+async function resolveDailyImageDocument(
   accountName: string,
 ): Promise<YuqueDocumentResult | null> {
   const token = await getOpenApiTokenStatus(accountName);
@@ -279,6 +280,20 @@ export async function ensureDailyImageDocument(
   return document;
 }
 
+export function ensureDailyImageDocument(
+  accountName: string,
+): Promise<YuqueDocumentResult | null> {
+  const key = accountName.trim();
+  const current = dailyDocumentRequests.get(key);
+  if (current) return current;
+
+  const request = resolveDailyImageDocument(key).finally(() => {
+    if (dailyDocumentRequests.get(key) === request) dailyDocumentRequests.delete(key);
+  });
+  dailyDocumentRequests.set(key, request);
+  return request;
+}
+
 export async function appendImagesToDailyDocument(
   accountName: string,
   images: DailyDocumentImage[],
@@ -296,7 +311,10 @@ export async function appendImagesToDailyDocument(
     second: '2-digit',
     hour12: false,
   });
+  const assetIds = [...new Set(images.map((image) => image.asset_id))].sort((left, right) => left - right);
+  const batchMarker = `<!-- quepic-daily:${assetIds.join(',')} -->`;
   const body = [
+    batchMarker,
     `## ${time}`,
     '',
     ...images.flatMap((image) => [

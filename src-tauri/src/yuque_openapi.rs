@@ -344,6 +344,9 @@ pub async fn create_yuque_document(
         }
         let existing_body = existing.body.as_deref().or(existing.body_draft.as_deref());
         let merged_body = append_markdown(existing_body, body);
+        if existing_body.unwrap_or_default().trim() == merged_body.trim() {
+            return Ok(document_result(existing, &namespace, false));
+        }
         let updated = update_document(
             &client,
             &token,
@@ -776,10 +779,18 @@ fn validate_title(value: &str) -> Result<&str, String> {
 
 fn append_markdown(existing: Option<&str>, addition: &str) -> String {
     let existing = existing.unwrap_or_default().trim();
+    let addition = addition.trim();
+    let marker = addition
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("<!-- quepic-daily:") && line.ends_with(" -->"));
+    if marker.is_some_and(|marker| existing.contains(marker)) {
+        return existing.to_string();
+    }
     if existing.is_empty() {
-        addition.trim().to_string()
+        addition.to_string()
     } else {
-        format!("{existing}\n\n{}", addition.trim())
+        format!("{existing}\n\n{addition}")
     }
 }
 
@@ -885,6 +896,13 @@ mod tests {
             "原有正文\n\n![图片](url)"
         );
         assert_eq!(append_markdown(None, "![图片](url)"), "![图片](url)");
+    }
+
+    #[test]
+    fn does_not_append_duplicate_daily_batch() {
+        let batch = "<!-- quepic-daily:12,18 -->\n## 12:30:00\n\n![图片](url)";
+        let existing = format!("原有正文\n\n{batch}");
+        assert_eq!(append_markdown(Some(&existing), batch), existing);
     }
 
     #[test]

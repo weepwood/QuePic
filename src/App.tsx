@@ -78,6 +78,7 @@ import type {
   AccountProfile,
   AssetRecord,
   CacheStats,
+  DailyDocumentImage,
   StoredUploadQueueItem,
     UploadContextResult,
     UploadQueueItem,
@@ -708,6 +709,32 @@ await refreshAccountStatus(item.accountName);
     }
   }, [markQueueItem, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles]);
 
+  const persistDailyDocumentSyncFailure = useCallback(async (
+    items: UploadQueueItem[],
+    error: unknown,
+  ) => {
+    const reason = normalizeError(error);
+    const ids = new Set(items.map((item) => item.id));
+    const updated: UploadQueueItem[] = [];
+    commitQueue((current) => current.map((item) => {
+      if (!ids.has(item.id)) return item;
+      const next: UploadQueueItem = {
+        ...item,
+        status: 'failed',
+        scheduledAt: null,
+        error: `图片已上传，但当天文档同步失败：${reason}。重试会复用现有链接。`,
+      };
+      updated.push(next);
+      return next;
+    }));
+    try {
+      await saveStoredQueueItems(updated.map(toStoredQueueItem));
+      return reason;
+    } catch (persistError) {
+      return `${reason}；恢复持久队列失败：${normalizeError(persistError)}`;
+    }
+  }, [commitQueue]);
+
   const retryUploadOne = useCallback(async (id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
@@ -724,14 +751,16 @@ await refreshAccountStatus(item.accountName);
     if (!item || !result) return;
     try {
       const dailyDocument = await appendImagesToDailyDocument(item.accountName, [{
+        asset_id: result.asset.id,
         file_name: item.file.name,
         remote_url: result.asset.remote_url,
       }]);
       if (dailyDocument) showToast('success', `图片已写入当天文档“${dailyDocument.title}”。`);
     } catch (error) {
-      showToast('error', `图片上传成功，但当天文档同步失败：${normalizeError(error)}`);
+      const reason = await persistDailyDocumentSyncFailure([item], error);
+      showToast('error', `图片上传成功，但当天文档同步失败：${reason}`);
     }
-  }, [prepareUploadContextForAccount, showToast, uploadOne]);
+  }, [persistDailyDocumentSyncFailure, prepareUploadContextForAccount, showToast, uploadOne]);
 
   const uploadAll = async () => {
     if (!credentialReady) {
@@ -776,13 +805,15 @@ await refreshAccountStatus(item.accountName);
 
       const immediateItems = pendingItems.slice(0, currentQuota.remaining);
       const overflowItems = pendingItems.slice(currentQuota.remaining);
-      const dailyImages: Array<{ file_name: string; remote_url: string }> = [];
+      const dailyImages: DailyDocumentImage[] = [];
+      const dailyItems: UploadQueueItem[] = [];
       let successCount = 0;
       for (const item of immediateItems) {
         const result = await uploadOne(item.id, true);
         if (result) {
           successCount += 1;
-          dailyImages.push({ file_name: item.file.name, remote_url: result.asset.remote_url });
+          dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
+          dailyItems.push(item);
         }
       }
 
@@ -802,7 +833,7 @@ await refreshAccountStatus(item.accountName);
         try {
           dailyDocumentTitle = (await appendImagesToDailyDocument(accountName, dailyImages))?.title || '';
         } catch (error) {
-          dailyDocumentError = normalizeError(error);
+          dailyDocumentError = await persistDailyDocumentSyncFailure(dailyItems, error);
         }
       }
       const summary = [`已立即上传 ${successCount} 张`];
@@ -893,16 +924,21 @@ await refreshAccountStatus(item.accountName);
           await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');
           continue;
         }
-        const dailyImages: Array<{ file_name: string; remote_url: string }> = [];
+        const dailyImages: DailyDocumentImage[] = [];
+      const dailyItems: UploadQueueItem[] = [];
         for (const item of accountItems.slice(0, accountQuota.remaining)) {
           const result = await uploadOne(item.id, true);
-          if (result) dailyImages.push({ file_name: item.file.name, remote_url: result.asset.remote_url });
+          if (result) {
+            dailyImages.push({ asset_id: result.asset.id, file_name: item.file.name, remote_url: result.asset.remote_url });
+            dailyItems.push(item);
+          }
         }
         if (dailyImages.length > 0) {
           try {
             await appendImagesToDailyDocument(account, dailyImages);
           } catch (error) {
-            showToast('error', `账号“${account}”图片已上传，但当天文档同步失败：${normalizeError(error)}`);
+            const reason = await persistDailyDocumentSyncFailure(dailyItems, error);
+            showToast('error', `账号“${account}”图片已上传，但当天文档同步失败：${reason}`);
           }
         }
         const overflow = accountItems.slice(accountQuota.remaining);
@@ -924,7 +960,7 @@ await refreshAccountStatus(item.accountName);
     } finally {
       autoUploadRunningRef.current = false;
     }
-  }, [markQueueItem, prepareUploadContextForAccount, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
+  }, [markQueueItem, persistDailyDocumentSyncFailure, prepareUploadContextForAccount, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
 
   useEffect(() => {
     if (!queueReady) return undefined;
