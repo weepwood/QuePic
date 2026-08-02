@@ -54,7 +54,7 @@ jobs:
     name: Rust backend
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch source, generate icons, check and test backend
+      - name: Fetch source, lint, check and test backend
         shell: bash
         run: |
           set -euo pipefail
@@ -73,20 +73,16 @@ jobs:
           npm install --silent > /tmp/npm-install.log 2>&1
           npm run icons > /tmp/icons.log 2>&1
           rustup default stable > /dev/null
+          rustup component add rustfmt clippy > /dev/null
 
-          set +e
-          cargo check --quiet --manifest-path src-tauri/Cargo.toml > /tmp/cargo-check.log 2>&1
-          check_status=$?
-          if [ "$check_status" -ne 0 ]; then
-            echo "Rust 编译失败："
-            tail -n 120 /tmp/cargo-check.log
-            exit "$check_status"
-          fi
-
-          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
-          test_status=$?
-          if [ "$test_status" -ne 0 ]; then
-            echo "Rust 单元测试失败："
-            tail -n 120 /tmp/cargo-test.log
-          fi
-          exit "$test_status"
+          cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+          # v0.8 既有架构债务由 #31 跟踪。除以下已登记类别外，新增警告仍按错误处理。
+          cargo clippy --quiet --manifest-path src-tauri/Cargo.toml --all-targets -- \
+            -D warnings \
+            -A dead_code \
+            -A clippy::drop_non_drop \
+            -A clippy::items_after_test_module \
+            -A clippy::manual_clamp \
+            -A clippy::too_many_arguments
+          cargo check --quiet --manifest-path src-tauri/Cargo.toml
+          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib

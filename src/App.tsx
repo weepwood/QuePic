@@ -53,13 +53,10 @@ import {
   deleteAsset,
   getCacheStats,
   getCredentialStatus,
-  getCookieValue,
   getOpenApiTokenStatus,
-  getOpenApiTokenValue,
-    getUploadQuotaStatus,
-    getStoredUploadContext,
-    listAccountProfiles,
-
+  getUploadQuotaStatus,
+  getStoredUploadContext,
+  listAccountProfiles,
   listAssetTags,
   listAssets,
   listLibraryFolders,
@@ -67,13 +64,12 @@ import {
   openYuqueLogin,
   saveAccountProfile,
   saveCookie,
-    saveOpenApiToken,
-    resolveUploadContext,
-    saveStoredUploadContext,
-    clearStoredUploadContext,
-    updateAssetCategory,
-    updateAssetTags,
-
+  saveOpenApiToken,
+  resolveUploadContext,
+  saveStoredUploadContext,
+  clearStoredUploadContext,
+  updateAssetCategory,
+  updateAssetTags,
   uploadImage,
 } from './lib/tauri';
 import {
@@ -96,10 +92,9 @@ import type {
   CacheStats,
   DailyDocumentImage,
   StoredUploadQueueItem,
-    UploadContextResult,
-    UploadQueueItem,
-    UploadQuotaStatus,
-
+  UploadContextResult,
+  UploadQueueItem,
+  UploadQuotaStatus,
   ViewKey,
 } from './types';
 
@@ -268,21 +263,17 @@ export default function App() {
   const [masterDocumentUrl, setMasterDocumentUrl] = useState(
     () => localStorage.getItem('quepic-document-url') || '',
   );
-  const [revealedCookie, setRevealedCookie] = useState('');
-  const [revealedToken, setRevealedToken] = useState('');
-  const [secretBusy, setSecretBusy] = useState<'cookie' | 'token' | null>(null);
   const [accountSwitching, setAccountSwitching] = useState(false);
   const [credentialReady, setCredentialReady] = useState(false);
-    const [tokenReady, setTokenReady] = useState(false);
-    const [uploadContext, setUploadContext] = useState<UploadContextResult | null>(
-        () => getStoredUploadContext(initialAccount),
-    );
-    const [uploadContextInput, setUploadContextInput] = useState(
-        () => getStoredUploadContext(initialAccount)?.document_url || '',
-    );
-    const [uploadContextBusy, setUploadContextBusy] = useState(false);
-    const [cookieInput, setCookieInput] = useState('');
-
+  const [tokenReady, setTokenReady] = useState(false);
+  const [uploadContext, setUploadContext] = useState<UploadContextResult | null>(
+    () => getStoredUploadContext(initialAccount),
+  );
+  const [uploadContextInput, setUploadContextInput] = useState(
+    () => getStoredUploadContext(initialAccount)?.document_url || '',
+  );
+  const [uploadContextBusy, setUploadContextBusy] = useState(false);
+  const [cookieInput, setCookieInput] = useState('');
   const [tokenInput, setTokenInput] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [tokenBusy, setTokenBusy] = useState(false);
@@ -422,8 +413,6 @@ export default function App() {
       localStorage.setItem('quepic-account', nextAccount);
       setAccountName(nextAccount);
       setAccountDraft(nextAccount);
-      setRevealedCookie('');
-      setRevealedToken('');
       const context = getStoredUploadContext(nextAccount);
       setUploadContext(context);
       setUploadContextInput(context?.document_url || '');
@@ -609,35 +598,10 @@ export default function App() {
   const handleClearCredential = async () => {
     try {
       await clearCookie(accountName);
-      setRevealedCookie('');
       await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
       showToast('success', '已清除当前账号的语雀登录凭据。');
     } catch (error) {
       showToast('error', normalizeError(error));
-    }
-  };
-
-  const toggleCookieVisibility = async () => {
-    if (revealedCookie) return setRevealedCookie('');
-    setSecretBusy('cookie');
-    try {
-      setRevealedCookie(await getCookieValue(accountName));
-    } catch (secretError) {
-      showToast('error', normalizeError(secretError));
-    } finally {
-      setSecretBusy(null);
-    }
-  };
-
-  const toggleTokenVisibility = async () => {
-    if (revealedToken) return setRevealedToken('');
-    setSecretBusy('token');
-    try {
-      setRevealedToken(await getOpenApiTokenValue(accountName));
-    } catch (secretError) {
-      showToast('error', normalizeError(secretError));
-    } finally {
-      setSecretBusy(null);
     }
   };
 
@@ -648,7 +612,6 @@ export default function App() {
       const account = await persistAccount();
       await saveOpenApiToken(account, tokenInput.trim());
       setTokenInput('');
-      setRevealedToken('');
       await Promise.all([refreshAccountStatus(account), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已保存到系统密钥库。');
     } catch (error) {
@@ -663,31 +626,30 @@ export default function App() {
     if (!credentialReady) return showToast('error', '请先为当前账号登录语雀并保存会话。');
     setUploadContextBusy(true);
     try {
-        const context = await resolveUploadContext(accountName, uploadContextInput.trim());
-        saveStoredUploadContext(context);
-        setUploadContext(context);
-        setUploadContextInput(context.document_url);
-        showToast('success', `上传上下文已绑定到文档“${context.title}”（${context.source === 'openapi' ? 'OpenAPI' : '登录会话'}验证）。`);
+      const context = await resolveUploadContext(accountName, uploadContextInput.trim());
+      saveStoredUploadContext(context);
+      setUploadContext(context);
+      setUploadContextInput(context.document_url);
+      showToast('success', `上传上下文已绑定到文档“${context.title}”（${context.source === 'openapi' ? 'OpenAPI' : '登录会话'}验证）。`);
     } catch (error) {
-        showToast('error', normalizeError(error));
+      showToast('error', normalizeError(error));
     } finally {
-        setUploadContextBusy(false);
+      setUploadContextBusy(false);
     }
-};
+  };
 
-    const handleClearUploadContext = () => {
+  const handleClearUploadContext = () => {
     clearStoredUploadContext(accountName);
     setUploadContext(null);
     setUploadContextInput('');
     showToast('success', '已清除当前账号的上传上下文。');
-};
+  };
 
-    const handleClearToken = async () => {
+  const handleClearToken = async () => {
     setTokenBusy(true);
     try {
       await clearOpenApiToken(accountName);
       setTokenInput('');
-      setRevealedToken('');
       await Promise.all([refreshAccountStatus(accountName), refreshProfiles()]);
       showToast('success', 'OpenAPI Token 已从系统密钥库清除。');
     } catch (error) {
@@ -1504,17 +1466,13 @@ export default function App() {
                   </section>
 
                   <section className="settings-section">
-                    <div className="settings-section-heading"><div><strong>当前账号凭据：{accountName}</strong><small>敏感内容默认隐藏，仅在点击显示时从系统密钥库读取。</small></div><KeyRound size={18} /></div>
+                    <div className="settings-section-heading"><div><strong>当前账号凭据：{accountName}</strong><small>完整 Cookie 与 Token 只保存在系统密钥库，不会返回 React、显示或复制。</small></div><KeyRound size={18} /></div>
                     <div className="actions">
                       <button className="button primary" disabled={loginBusy} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
                       <button className="button secondary" disabled={loginBusy} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
                       <button className="button danger" disabled={!credentialReady} onClick={() => void handleClearCredential()}><Trash2 size={17} />清除 Cookie</button>
                     </div>
-                    <div className="secret-display-row">
-                      <label className="field"><span>Cookie</span><input readOnly type={revealedCookie ? 'text' : 'password'} value={revealedCookie || (credentialReady ? '已保存在系统密钥库' : '')} placeholder="尚未配置 Cookie" /></label>
-                      <button className="button secondary compact" disabled={!credentialReady || secretBusy === 'cookie'} onClick={() => void toggleCookieVisibility()}>{secretBusy === 'cookie' ? <LoaderCircle className="spin" size={15} /> : <KeyRound size={15} />}{revealedCookie ? '隐藏' : '显示'}</button>
-                      <button className="button secondary compact" disabled={!revealedCookie} onClick={() => void copyText(revealedCookie)}><Copy size={15} />复制</button>
-                    </div>
+                    <p className="panel-note">Cookie 状态：{credentialReady ? '已安全保存。需要更新时请重新登录或手动覆盖。' : '尚未配置。'}</p>
                     <details>
                       <summary>手动粘贴 Cookie</summary>
                       <label className="field"><span>完整 Cookie</span><textarea value={cookieInput} onChange={(event) => setCookieInput(event.target.value)} rows={5} placeholder="从语雀上传请求中复制 Cookie" /></label>
@@ -1529,11 +1487,7 @@ export default function App() {
                           <button className="button primary" disabled={tokenBusy || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存 Token</button>
                           <button className="button danger" disabled={tokenBusy || !tokenReady} onClick={() => void handleClearToken()}><Trash2 size={17} />清除 Token</button>
                         </div>
-                        <div className="secret-display-row">
-                          <label className="field"><span>当前 Token</span><input readOnly type={revealedToken ? 'text' : 'password'} value={revealedToken || (tokenReady ? '已保存在系统密钥库' : '')} placeholder="尚未配置 Token" /></label>
-                          <button className="button secondary compact" disabled={!tokenReady || secretBusy === 'token'} onClick={() => void toggleTokenVisibility()}>{secretBusy === 'token' ? <LoaderCircle className="spin" size={15} /> : <KeyRound size={15} />}{revealedToken ? '隐藏' : '显示'}</button>
-                          <button className="button secondary compact" disabled={!revealedToken} onClick={() => void copyText(revealedToken)}><Copy size={15} />复制</button>
-                        </div>
+                        <p className="panel-note">Token 状态：{tokenReady ? '已安全保存。需要更新时请输入新 Token 覆盖。' : '尚未配置。'}</p>
                       </div>
                     ) : (
                       <div className="queue-auto-context-note">当前账号是子账号，只需保存 Cookie，不需要 Token，也不需要设置文档权限。</div>
@@ -1598,7 +1552,6 @@ function formatResetTime(value: string | null): string {
   if (!value) return '稍后';
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
-
 
 function resolveRetryTimestamp(value: string | null): number {
   const parsed = value ? Date.parse(value) : Number.NaN;

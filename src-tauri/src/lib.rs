@@ -158,12 +158,6 @@ fn credential_status(account_name: String) -> Result<CredentialStatus, String> {
 }
 
 #[tauri::command]
-fn reveal_cookie(account_name: String) -> Result<String, String> {
-    let account_name = normalize_account_name(&account_name)?;
-    credentials::load(&account_name)
-}
-
-#[tauri::command]
 fn clear_cookie(account_name: String) -> Result<(), String> {
     let account_name = normalize_account_name(&account_name)?;
     credentials::clear(&account_name)
@@ -950,11 +944,9 @@ pub fn run() {
             open_yuque_login,
             capture_yuque_login,
             credential_status,
-            reveal_cookie,
             clear_cookie,
             openapi_token::save_openapi_token,
             openapi_token::openapi_token_status,
-            openapi_token::reveal_openapi_token,
             openapi_token::clear_openapi_token,
             accounts::list_account_profiles,
             accounts::save_account_profile,

@@ -1,177 +1,254 @@
 # QuePic · 雀图库
 
-QuePic 是一个使用 **React + Tauri 2 + Rust + SQLite** 构建的本地优先图片上传与管理工具。它通过应用内语雀登录窗口取得网页会话，调用语雀图片上传接口获得远程链接，并把原图和缩略图缓存到本地，避免语雀防盗链导致桌面图库无法显示。
+QuePic 是一款使用 **React 19 + Tauri 2 + Rust + SQLite** 构建的本地优先语雀图片上传、整理和文档发布工具。
 
-> 语雀图片上传接口属于网页端非公开接口，可能随语雀调整而失效。QuePic 与语雀官方无关。
+应用通过独立语雀登录窗口获取网页会话，由 Rust 调用语雀网页图片上传接口；图片记录、文件夹、标签和缓存索引保存在本地 SQLite，预览文件保存在应用缓存目录。QuePic 与语雀官方无关。
 
-## 主要功能
+> 语雀图片上传使用网页端非公开接口，接口、风控或防盗链规则可能随时变化。OpenAPI 仅用于知识库和文档操作，不能替代网页会话上传图片。
 
-- React 19 + TypeScript 桌面界面；
-- 图片拖放、文件选择和剪贴板导入；
-- 批量上传队列与失败重试；
-- 选择本地文件夹，按图片文件名自然顺序批量上传并创建同名语雀文档；
-- 使用语雀 OpenAPI Token 创建 Markdown 文档，Token 不写入本地存储；
-- 应用内登录语雀并捕获包含 HttpOnly 的会话 Cookie；
-- Cookie 分片写入 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；
-- 通过 `POST https://www.yuque.com/api/upload/attach` 上传图片；
-- SQLite 本地图片索引与 SHA-256 完全重复图片检测；
-- 上传后保存本地原图，并生成最长边 512px 的 PNG 缩略图；
-- 图片库优先通过 Tauri Asset Protocol 加载本地缓存；
-- 历史图片接近可视区域时，由 Rust 带语雀会话按需回源并补建缓存；
-- 可选 `i3.wp.com` WordPress CDN 兼容兜底，默认关闭；
-- 缓存数量、占用空间统计与一键清理；
-- 删除本地记录时同步清理本地缓存，但不删除语雀远程图片；
-- Windows 发布版不显示额外控制台窗口。
+## 当前版本
 
-## 图片显示优先级
+当前稳定基线为 **v0.8.0**，主要能力包括：
+
+- 主账号与子账号上传体系；
+- 普通图片持久队列；
+- 文件夹批量上传并创建或追加语雀 Markdown 文档；
+- 多账号共享图片库；
+- 文件夹、标签、搜索、排序和批量管理；
+- 原始比例瀑布流与统一方格视图；
+- 应用内原图查看与系统保存；
+- 本地详情预览和缩略图两级缓存；
+- 每日图片文档自动创建、目录登记和幂等追加；
+- SQLite 图片索引与备份恢复；
+- Windows x64 NSIS 与 macOS Apple Silicon DMG 发布。
+
+## 主子账号模型
+
+QuePic 将“图片上传身份”和“文档管理身份”分开：
+
+### 主账号
+
+主账号需要：
+
+- 有效语雀 Cookie；
+- 语雀 OpenAPI Token；
+- 默认知识库或目标文档配置。
+
+主账号负责：
+
+- 创建和更新语雀文档；
+- 将所有账号上传得到的图片链接写入主账号文档；
+- 上传大于 10 MB、且不超过 50 MB 的图片；
+- 在没有可用子账号时上传小图。
+
+### 子账号
+
+子账号只需要有效语雀 Cookie：
+
+- 不需要 Token；
+- 不需要配置知识库或文档；
+- 不需要拥有主账号文档访问权限；
+- 可优先处理不超过 10 MB 的图片。
+
+普通上传与文件夹转文档共用同一套账号规则。每个账号独立按自然整点小时记录上传尝试；当前保守保护值为每账号 140 次/整点小时，这不是语雀官方承诺的固定配额。
+
+## 图片上传流程
 
 ```text
-本地缩略图或原图
-  ↓ 不存在或损坏
-Rust 使用语雀 Cookie + Referer 回源
-  ↓ 成功后写入本地缓存
-WordPress CDN 兼容代理（仅用户主动开启）
-  ↓ 仍失败
-加载失败占位图
+React 选择、拖放或粘贴图片
+  → 队列生成小尺寸临时预览
+  → 持久化普通上传队列到 IndexedDB
+  → 根据文件大小和账号状态选择候选账号
+  → Rust 校验文件、账号 Cookie、上传上下文和实时额度
+  → SHA-256 同账号去重
+  → 调用语雀网页图片上传接口
+  → 保存 SQLite 图片记录
+  → 生成本地详情预览和缩略图
+  → 主账号将图片块幂等写入当天文档
 ```
 
-QuePic 不再把语雀原始 URL 直接作为图库 `<img>` 地址。原始远程 URL 仍保留，用于复制 URL、复制 Markdown 和后续回源。
+上传成功但文档写入失败时，普通上传队列会保留已上传结果。重试会复用远程链接，不会再次上传同一队列项。
 
-### 新上传图片
+## 文件夹转文档
 
-上传成功后，QuePic 会把上传前已有的图片字节写入应用缓存目录，因此不需要再从语雀下载一次。支持解码的图片同时生成 512px PNG 缩略图；SVG、AVIF 或其他当前缩略图解码器不支持的格式会直接使用原文件作为预览。
+1. 在设置中选择主账号。
+2. 为主账号保存 Cookie 与 OpenAPI Token。
+3. 在“主账号文档目标”中选择知识库，可选指定追加文档。
+4. 打开“文件夹转文档”，选择包含图片的本地文件夹。
+5. 确认自然排序结果后开始上传。
 
-### 历史图片
+规则：
 
-旧版本已有记录没有本地文件。进入图片库后，图片接近可视区域时才会触发回源，避免一次性请求整个图库。成功后缓存状态和占用统计会自动更新，后续可以离线显示。
+- 递归读取常见图片格式；
+- 按完整相对路径执行中文数字自然排序；
+- 不超过 10 MB 的图片优先使用已登录子账号；
+- 大于 10 MB 的图片只使用主账号；
+- 所有可用账号额度耗尽后等待下一整点；
+- 未指定目标文档时，以文件夹名称创建 Markdown 文档；
+- 指定目标文档时追加图片并保留原正文；
+- 文档自动加入知识库目录，并避免重复目录节点。
 
-### WordPress CDN 兼容模式
+当前 v0.8 的文件夹任务在页面切换时保持运行，但应用完全退出后不能恢复文件对象。跨应用重启的 Rust 持久任务系统正在 #33 中规划。
 
-设置页中的“WordPress CDN 兼容兜底”默认关闭。开启后，只有本地缓存和 Rust 回源都失败时，QuePic 才会把经过域名验证的语雀图片地址转换为：
+## 共享图片库
+
+所有账号上传的图片进入同一个本地图库。账号切换只改变后续上传身份，不隐藏历史记录。
+
+图库支持：
+
+- 单归属文件夹；
+- 多标签；
+- 文件名、链接、类型、账号、文件夹和标签搜索；
+- 最新、最早、名称、大小和文件夹排序；
+- 原始比例瀑布流；
+- 统一方格；
+- 批量归类和批量删除本地记录；
+- 原图查看、放大缩小、系统保存；
+- URL 与 Markdown 复制。
+
+删除图片记录只删除 SQLite 索引和对应本地缓存，不删除语雀服务器上的附件。
+
+## 本地缓存与回源
+
+QuePic 不长期保存所有上传原文件。当前缓存包含：
+
+- 详情预览：目标不超过约 820 KB；
+- 缩略图：目标不超过约 160 KB；
+- 单张图片两级缓存目标合计约 1 MB；
+- 用户查看或保存原图时按需回源真实原始字节。
+
+显示优先级：
 
 ```text
-https://i3.wp.com/cdn.nlark.com/yuque/...
+本地缩略图或详情预览
+  ↓
+受控公开远程回源
+  ↓
+来源账号语雀会话回源
+  ↓
+WordPress CDN 兼容兜底（用户主动开启）
+  ↓
+加载失败状态
 ```
 
-该方式会让 WordPress.com 服务器访问并可能缓存图片，不建议用于敏感、内部或隐私图片。
+WordPress CDN 模式会让 WordPress.com 服务器访问并可能缓存图片，不建议用于敏感、内部、医疗或隐私图片。
 
-## 技术栈
+## 凭据安全
 
-- React 19、TypeScript、Vite
-- Tauri 2、Rust、reqwest
-- Tauri Asset Protocol
-- SQLite / rusqlite
-- image-rs
-- keyring-rs
+Cookie 与 OpenAPI Token 使用 keyring-rs 保存到操作系统密钥库：
+
+- Windows Credential Manager；
+- macOS Keychain；
+- Linux Secret Service。
+
+Windows 长 Cookie 会按 UTF-16 单元分片保存，并通过 Manifest 原子切换。
+
+安全边界：
+
+- Cookie、Token 不写入 SQLite、localStorage、IndexedDB、日志或 Git；
+- 完整 Cookie、Token 不返回 React，也不能在应用中回显或复制；
+- React 只能查询“已配置/未配置”，以及发起覆盖或清除操作；
+- 带 Cookie 的请求只由 Rust 发往固定语雀上传地址；
+- OpenAPI Token 只由 Rust 用于固定语雀 OpenAPI 域名；
+- 上传和下载客户端禁止自动重定向；
+- 远程图片只接受 HTTPS 语雀/Nlark 白名单域名。
+
+详细边界见 [`docs/SECURITY.md`](docs/SECURITY.md)。
+
+## 备份与恢复
+
+QuePic 的 `.quepic-backup` 支持：
+
+1. 设置与账号名称；
+2. 设置、图片索引；
+3. 设置、图片索引和本地缓存。
+
+Cookie 与 Token 永远不进入备份。完整恢复使用数据库级读写门闩、WAL checkpoint、同盘暂存、数据库与缓存备份和失败回滚。
+
+前端全局维护态与更多并发故障注入测试仍在 Issue #22 中继续完善。
+
+## 项目结构
+
+```text
+src/
+├─ App.tsx
+├─ components/
+│  ├─ AssetPreview.tsx
+│  ├─ BatchDocumentUploader.tsx
+│  ├─ OriginalImageViewer.tsx
+│  └─ YuqueDocumentManager.tsx
+├─ lib/
+│  ├─ tauri.ts
+│  ├─ uploadQueueStore.ts
+│  └─ uploadRouting.ts
+├─ types.ts
+└─ *.css
+
+src-tauri/src/
+├─ accounts.rs
+├─ backup.rs
+├─ credentials.rs
+├─ database.rs
+├─ models.rs
+├─ openapi_token.rs
+├─ preview.rs
+├─ remote_preview.rs
+├─ yuque.rs
+├─ yuque_openapi.rs
+└─ lib.rs
+```
+
+当前结构仍处于收敛阶段。App.tsx、Rust command 和上传路由的拆分计划见 #29、#31 和 #32。
 
 ## 开发
 
-环境要求：Node.js 20+，推荐 22；Rust 1.77.2+；安装对应平台的 Tauri 系统依赖。
+环境要求：
+
+- Node.js 22；
+- Rust stable；
+- Tauri 2 对应平台系统依赖。
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-只检查 React 前端：
+前端构建：
 
 ```bash
 npm run build
 ```
 
-检查 Rust 后端与单元测试：
+Rust 检查：
 
 ```bash
 npm run icons
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
-## 登录语雀
+## 发布平台
 
-1. 打开 QuePic 的“设置”。
-2. 填写用于区分本地凭据的账号名称，例如 `default`。
-3. 点击“登录语雀”。
-4. 在独立窗口中完成扫码、手机号或其他语雀支持的登录方式。
-5. 看到语雀主页后返回 QuePic，点击“完成登录并保存”。
-6. QuePic 会读取匹配语雀上传地址的 Cookie，并安全保存。
+当前自动发布：
 
-Cookie 不会写入 SQLite、前端持久化状态、日志或 Git 仓库。React 前端也没有读取已保存 Cookie 的接口。
+- Windows x64 NSIS；
+- macOS Apple Silicon DMG。
 
-### Windows 长 Cookie
+Windows 安装包尚未商业代码签名；macOS 使用临时签名但尚未公证，系统可能显示未知开发者提示。
 
-Windows Credential Manager 的单条密码存在长度限制。QuePic v0.1.1 起会按 UTF-16 单元把长 Cookie 拆分为多个安全凭据，并用短 Manifest 管理分片，因此不再出现 `password encoded as UTF-16 is longer than platform limit of 2560 chars`。
+## 已知限制
 
-设置页仍保留“高级：手动粘贴 Cookie”作为回退方式，手动保存同样使用分片存储。
+- 语雀网页上传接口不是公开稳定 API；
+- CI 不使用真实语雀账号，线上兼容性仍需要安装包冒烟验证；
+- 文件夹任务目前不能跨应用退出恢复；
+- 主账号和文档目标仍有部分配置保存在 localStorage；
+- 上传账号选择目前仍由前端参与决策；
+- 缓存当前只有手动清理，尚未实现容量上限和 LRU；
+- 自动更新、Windows 签名和 macOS 公证尚未完成。
 
-## 文件夹批量创建语雀文档
-
-1. 先按照上面的步骤保存语雀登录会话，用于上传图片附件。
-2. 点击应用右下角的“文件夹转文档”。
-3. 填写与设置页一致的上传账号、目标知识库 ID 和语雀 OpenAPI Token。
-4. 选择本地文件夹，确认界面显示的图片排序结果。
-5. 点击“上传并创建文档”。
-
-处理规则：
-
-- 文档标题使用所选顶层文件夹的名称；
-- 递归读取文件夹中的常见图片格式；
-- 按完整相对路径进行中文自然排序，例如 `1.png、2.png、10.png`；
-- 图片严格串行上传，Markdown 正文顺序与排序预览一致；
-- 单张图片不能超过 50 MB；
-- OpenAPI Token 仅保存在当前界面内存中，不写入 `localStorage`、SQLite 或系统密钥库；
-- 已上传图片由现有 SHA-256 去重逻辑复用，失败后可直接重试；
-- 语雀 OpenAPI 创建的文档不会自动加入知识库目录，需要在语雀中手动加入，或后续调用目录更新接口。
-
-图片上传仍依赖语雀网页会话，因为当前 OpenAPI 文档没有提供附件上传端点；OpenAPI Token 仅用于调用 `POST /api/v2/repos/{book_id}/docs` 创建 Markdown 文档。
-
-## 缓存与删除边界
-
-QuePic 管理的是本地索引和本地预览缓存，并不是语雀官方附件管理器：
-
-- 删除图片记录会删除 SQLite 数据及对应本地缓存；
-- 不会删除语雀服务器上的远程图片；
-- “清理本地缓存”保留全部 SQLite 记录和远程 URL；
-- 清理后，历史图片会在进入视口时重新回源；
-- 已上传 URL 是否长期有效取决于语雀服务；
-- 本地数据库位于系统应用数据目录；
-- 图片缓存位于系统应用缓存目录的 `previews` 子目录。
-
-## 项目结构
-
-```text
-src/
-├─ App.tsx                                  页面、登录、上传、缓存设置与图片库
-├─ components/AssetPreview.tsx             懒加载、本地文件与代理预览
-├─ components/BatchDocumentUploader.tsx    文件夹选择、排序、上传与文档创建
-├─ lib/tauri.ts                             前端 IPC 封装
-├─ types.ts                                 前端数据类型
-├─ styles.css                               主界面样式
-├─ preview.css                              预览与缓存设置样式
-└─ batch-document.css                       文件夹转文档界面样式
-
-src-tauri/src/
-├─ credentials.rs                           系统密钥库分片存储
-├─ database.rs                              assets / asset_previews 数据访问
-├─ models.rs                                IPC 与缓存数据结构
-├─ preview.rs                               原图缓存、缩略图和缓存清理
-├─ yuque.rs                                 上传、受控回源和代理 URL 转换
-├─ yuque_openapi.rs                         OpenAPI 文档创建与错误处理
-└─ lib.rs                                   登录窗口、Tauri 命令与业务编排
-```
-
-详细设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，安全边界见 [`docs/SECURITY.md`](docs/SECURITY.md)。
-
-## 后续路线
-
-- 相册、标签、收藏和批量编辑；
-- SQLite FTS5 全文检索；
-- 上传任务持久化和应用重启恢复；
-- 缓存配额、LRU 自动回收与批量预下载；
-- 多语雀账号切换；
-- 系统托盘和全局快捷键；
-- R2、S3、GitHub 等多存储适配器；
-- 商业代码签名与 macOS 公证。
+完整 v1.0 路线见 Issue #29。
 
 ## License
 
