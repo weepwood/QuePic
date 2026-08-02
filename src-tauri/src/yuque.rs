@@ -420,8 +420,8 @@ fn secure_client(timeout: std::time::Duration) -> Result<reqwest::Client, String
 mod tests {
     use super::{
         build_upload_url, cookie_value, extract_document_id, extract_html_title,
-        normalize_document_url, normalize_remote_url, resolve_upload_referer,
-        wordpress_proxy_url, YUQUE_ORIGIN_REFERER,
+        normalize_document_url, normalize_remote_url, resolve_upload_referer, wordpress_proxy_url,
+        YUQUE_ORIGIN_REFERER,
     };
 
     #[test]
@@ -479,8 +479,7 @@ mod tests {
             Some("child-token")
         );
         assert_eq!(
-            resolve_upload_referer(None, Some("https://www.yuque.com/other/book/doc"))
-                .unwrap(),
+            resolve_upload_referer(None, Some("https://www.yuque.com/other/book/doc")).unwrap(),
             YUQUE_ORIGIN_REFERER
         );
     }
