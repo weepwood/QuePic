@@ -70,19 +70,29 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("账号名称不能为空。".into());
     }
-    if value.len() > 80 {
-        return Err("账号名称过长。".into());
+    if value.chars().count() > 80 {
+        return Err("账号名称不能超过 80 个字符。".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("账号名称包含无效控制字符。".into());
     }
     Ok(value.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_token;
+    use super::{normalize_account_name, validate_token};
 
     #[test]
     fn validates_token_bounds() {
         assert!(validate_token("short").is_err());
         assert!(validate_token("12345678").is_ok());
+    }
+
+    #[test]
+    fn accepts_multibyte_account_names_by_character_count() {
+        assert!(normalize_account_name(&"账号".repeat(40)).is_ok());
+        assert!(normalize_account_name(&"账号".repeat(41)).is_err());
+        assert!(normalize_account_name("账号\n名称").is_err());
     }
 }
