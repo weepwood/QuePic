@@ -1,0 +1,54 @@
+name: Create clean folder and account branch
+
+on:
+  pull_request_target:
+    types: [reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  create-clean-branch:
+    if: github.event.pull_request.head.ref == 'feat/primary-account-failover'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create clean feature branch
+        run: |
+          git fetch origin feat/primary-account-failover
+          git checkout -B feat/folder-task-account-unification origin/main
+          git checkout origin/feat/primary-account-failover -- \
+            src-tauri/src/database.rs \
+            src-tauri/src/lib.rs \
+            src-tauri/src/openapi_token.rs \
+            src/App.tsx \
+            src/batch-document.css \
+            src/components/BatchDocumentUploader.tsx \
+            src/lib/tauri.ts \
+            src/lib/uploadQueueStore.ts \
+            src/lib/uploadRouting.ts \
+            src/types.ts
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: 持久化文件夹任务并统一主子账号设置'
+          git push --force-with-lease origin HEAD:feat/folder-task-account-unification
+
+      - name: Cleanup workflow
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git clone --quiet --branch main "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/quepic-main
+          cd /tmp/quepic-main
+          rm -f .github/workflows/create-clean-folder-account-branch.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'chore: 清理文件夹与账号统一干净分支执行器' || exit 0
+          git push origin HEAD:main
