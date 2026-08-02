@@ -831,8 +831,25 @@ mod tests {
         initialize(&path).unwrap();
         let asset = insert_asset(&path, &test_asset("default")).unwrap();
         assert_eq!(asset.category, "测试");
+        assert_eq!(asset.tags, vec!["演示"]);
+        assert!(list_library_folders(&path)
+            .unwrap()
+            .contains(&"测试".to_string()));
+
         let updated = update_asset_category(&path, asset.id, "截图").unwrap();
         assert_eq!(updated.category, "截图");
+        assert!(list_library_folders(&path)
+            .unwrap()
+            .contains(&"截图".to_string()));
+
+        let retagged = update_asset_tags(
+            &path,
+            asset.id,
+            &["参考".into(), "参考".into(), " UI ".into()],
+        )
+        .unwrap();
+        assert_eq!(retagged.tags, vec!["UI", "参考"]);
+        assert_eq!(list_asset_tags(&path).unwrap(), vec!["UI", "参考"]);
         cleanup_database(&path);
     }
 

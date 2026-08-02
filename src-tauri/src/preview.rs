@@ -5,7 +5,7 @@ use std::{
 };
 
 use chrono::Utc;
-use image::{codecs::jpeg::JpegEncoder, DynamicImage};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, Rgb, RgbImage};
 
 const DISPLAY_EDGE: u32 = 2_400;
 const REMOTE_PREVIEW_EDGE: u32 = 720;
@@ -153,25 +153,48 @@ fn encode_resized_image(
     let mut edge = max_edge.max(320);
     let mut quality = jpeg_quality.max(38);
     let encoded = loop {
-        let resized = image.thumbnail(edge, edge).to_rgb8();
+        let resized = flatten_on_white(image, edge);
         let mut output = Vec::new();
         JpegEncoder::new_with_quality(&mut output, quality)
             .encode_image(&DynamicImage::ImageRgb8(resized))
             .map_err(|error| format!("无法编码 JPEG 图片缓存：{error}"))?;
-        if output.len() <= max_bytes || edge <= 320 {
+        if output.len() <= max_bytes {
             break output;
         }
-        if quality > 52 {
-            quality = quality.saturating_sub(8);
-        } else {
-            edge = (edge.saturating_mul(3) / 4).max(320);
-            quality = jpeg_quality.min(72);
+        if quality > 38 {
+            quality = quality.saturating_sub(8).max(38);
+            continue;
         }
+        if edge > 320 {
+            edge = (edge.saturating_mul(3) / 4).max(320);
+            quality = jpeg_quality.min(64).max(38);
+            continue;
+        }
+        return Err(format!(
+            "图片在最低缓存尺寸和质量下仍超过 {} KB，已拒绝写入超限缓存。",
+            max_bytes / 1024
+        ));
     };
 
     let target = asset_dir.join(format!("{stem}.jpg"));
     write_atomic(&target, &encoded)?;
     Ok(target)
+}
+
+fn flatten_on_white(image: &DynamicImage, max_edge: u32) -> RgbImage {
+    let rgba = image.thumbnail(max_edge, max_edge).to_rgba8();
+    let mut flattened = RgbImage::new(rgba.width(), rgba.height());
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let alpha = u16::from(pixel[3]);
+        let blend =
+            |channel: u8| ((u16::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        flattened.put_pixel(
+            x,
+            y,
+            Rgb([blend(pixel[0]), blend(pixel[1]), blend(pixel[2])]),
+        );
+    }
+    flattened
 }
 
 fn cleanup_stale_files(asset_dir: &Path, keep: &[&Path]) {
@@ -293,7 +316,9 @@ fn remove_empty_parent(asset_dir: &Path, cache_root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{GenericImageView, Rgb, RgbImage};
+    use std::io::Cursor;
+
+    use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
 
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -339,6 +364,16 @@ mod tests {
         assert!(image::open(preview).unwrap().dimensions().1 <= REMOTE_PREVIEW_EDGE);
         assert!(original_exists(Some(original)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transparent_pixels_are_composited_on_white() {
+        let mut source = RgbaImage::new(8, 8);
+        for pixel in source.pixels_mut() {
+            *pixel = Rgba([255, 0, 0, 0]);
+        }
+        let flattened = flatten_on_white(&DynamicImage::ImageRgba8(source), 8);
+        assert_eq!(flattened.get_pixel(0, 0).0, [255, 255, 255]);
     }
 
     #[test]

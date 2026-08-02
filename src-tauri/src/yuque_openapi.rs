@@ -970,8 +970,8 @@ mod tests {
 
     use super::{
         append_markdown, build_document_url, extract_error_message, openapi_default_headers,
-        parse_yuque_url, validate_account_name, validate_namespace, value_to_i64,
-        BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
+        parse_yuque_url, toc_contains_document, validate_account_name, validate_namespace,
+        value_to_i64, YuqueDocument, YuqueTocNode, BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
     };
 
     #[test]
@@ -1026,6 +1026,37 @@ mod tests {
         assert_eq!(merged.matches("quepic-image:18").count(), 1);
         assert!(merged.contains("![图片18](url18)"));
         assert_eq!(append_markdown(Some(&merged), addition), merged);
+    }
+
+    #[test]
+    fn finds_document_in_nested_repository_toc() {
+        let document = YuqueDocument {
+            id: 42,
+            title: "每日图片 2026-08-02".into(),
+            slug: "daily-2026-08-02".into(),
+            format: Some("markdown".into()),
+            body: None,
+            body_draft: None,
+            book_id: Some(7),
+            book: None,
+            updated_at: None,
+            content_updated_at: None,
+            word_count: None,
+        };
+        let nodes = vec![YuqueTocNode {
+            id: None,
+            doc_id: None,
+            url: None,
+            slug: None,
+            children: vec![YuqueTocNode {
+                id: None,
+                doc_id: Some(42),
+                url: Some("daily-2026-08-02".into()),
+                slug: None,
+                children: Vec::new(),
+            }],
+        }];
+        assert!(toc_contains_document(&nodes, &document));
     }
 
     #[test]
