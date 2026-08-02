@@ -52,7 +52,19 @@ struct AppState {
     preview_cache_dir: PathBuf,
     cache_lock: Arc<Mutex<()>>,
     upload_gate: Arc<tokio::sync::Mutex<()>>,
+    database_gate: Arc<tokio::sync::RwLock<()>>,
     preview_limiter: Arc<remote_preview::RequestLimiter>,
+}
+
+impl AppState {
+    pub(crate) fn try_database_read(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+        self.database_gate
+            .clone()
+            .try_read_owned()
+            .map_err(|_| "QuePic 正在导入或导出备份，数据库暂时不可用，请稍后重试。".to_string())
+    }
 }
 
 #[tauri::command]
@@ -153,6 +165,7 @@ fn clear_cookie(account_name: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {
+    let _database_guard = state.try_database_read()?;
     database::list_assets(&state.database_path)
 }
 
@@ -162,12 +175,14 @@ fn update_asset_category(
     id: i64,
     category: String,
 ) -> Result<AssetRecord, String> {
+    let _database_guard = state.try_database_read()?;
     let category = normalize_category(&category)?;
     database::update_asset_category(&state.database_path, id, &category)
 }
 
 #[tauri::command]
 fn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {
+    let _database_guard = state.try_database_read()?;
     shared_cache_stats(&state.database_path)
 }
 
@@ -176,6 +191,7 @@ fn upload_quota_status(
     state: State<'_, AppState>,
     account_name: String,
 ) -> Result<UploadQuotaStatus, String> {
+    let _database_guard = state.try_database_read()?;
     let account_name = normalize_account_name(&account_name)?;
     database::upload_quota_status(&state.database_path, &account_name)
 }
@@ -185,8 +201,10 @@ async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, S
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
+    let database_gate = state.database_gate.clone();
     drop(state);
 
+    let _database_guard = database_gate.read_owned().await;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = cache_lock
             .lock()
@@ -201,6 +219,7 @@ async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, S
 
 #[tauri::command]
 fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let _database_guard = state.try_database_read()?;
     let asset = database::find_by_id(&state.database_path, id)?;
     database::delete_asset(&state.database_path, id)?;
 
@@ -228,8 +247,10 @@ async fn ensure_preview(
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
     let preview_limiter = state.preview_limiter.clone();
+    let database_gate = state.database_gate.clone();
     drop(state);
 
+    let _database_guard = database_gate.read_owned().await;
     let asset = database::find_by_id(&database_path, asset_id)?
         .ok_or_else(|| "图片记录不存在。".to_string())?;
 
@@ -326,6 +347,7 @@ fn save_original_image(
     state: State<'_, AppState>,
     asset_id: i64,
 ) -> Result<SaveOriginalResult, String> {
+    let _database_guard = state.try_database_read()?;
     let asset = database::find_by_id(&state.database_path, asset_id)?
         .ok_or_else(|| "图片记录不存在。".to_string())?;
     let source = asset
@@ -383,8 +405,10 @@ async fn upload_image(
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
     let upload_gate = state.upload_gate.clone();
+    let database_gate = state.database_gate.clone();
     drop(state);
 
+    let _database_guard = database_gate.read_owned().await;
     let category = normalize_category(&input.category)?;
     let file_name = sanitize_file_name(&input.file_name)?;
     let mut hasher = Sha256::new();
@@ -844,6 +868,7 @@ pub fn run() {
                 preview_cache_dir,
                 cache_lock: Arc::new(Mutex::new(())),
                 upload_gate: Arc::new(tokio::sync::Mutex::new(())),
+                database_gate: Arc::new(tokio::sync::RwLock::new(())),
                 preview_limiter: Arc::new(remote_preview::RequestLimiter::new()),
             });
             Ok(())
