@@ -16,6 +16,7 @@ import type {
   YuqueDocumentSummary,
   YuqueRepositorySummary,
 } from '../types';
+import { recordUploadLog } from './uploadLogger';
 
 const UPLOAD_CONTEXT_PREFIX = 'quepic-upload-context:';
 const dailyDocumentRequests = new Map<string, Promise<YuqueDocumentResult | null>>();
@@ -116,6 +117,16 @@ function resolveImageMimeType(file: File): string {
     webp: 'image/webp',
   };
   return extension ? mimeTypes[extension] || 'application/octet-stream' : 'application/octet-stream';
+}
+
+function normalizeInvokeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
@@ -229,33 +240,153 @@ export async function uploadImage(
   tags: string[],
   contextAccountName = accountName,
 ): Promise<UploadResult> {
+  const requestId = crypto.randomUUID();
+  const startedAt = performance.now();
+  const mimeType = resolveImageMimeType(file);
   const normalizedAccountName = accountName.trim();
   const normalizedContextAccountName = contextAccountName.trim();
   const usesDocumentContext = normalizedAccountName === normalizedContextAccountName;
   const context = usesDocumentContext
     ? getStoredUploadContext(normalizedContextAccountName)
     : null;
+  const baseRequest = {
+    file_name: file.name,
+    mime_type: mimeType,
+    byte_count: file.size,
+    width,
+    height,
+    account_name: normalizedAccountName,
+    context_account_name: normalizedContextAccountName,
+    upload_mode: usesDocumentContext ? 'document_context' : 'child_contextless',
+    category,
+    tags,
+  };
+
   if (usesDocumentContext && !context) {
-    throw new Error(
-      `主账号“${normalizedContextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`,
-    );
+    const message = `主账号“${normalizedContextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`;
+    recordUploadLog({
+      requestId,
+      phase: 'prepared',
+      title: '准备上传图片',
+      accountName: normalizedAccountName,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType,
+      request: baseRequest,
+    });
+    recordUploadLog({
+      requestId,
+      phase: 'error',
+      title: '上传请求未发送',
+      accountName: normalizedAccountName,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType,
+      durationMs: Math.round(performance.now() - startedAt),
+      request: baseRequest,
+      response: { command: 'upload_image', status: 'not_sent' },
+      error: message,
+    });
+    throw new Error(message);
   }
 
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-  return invoke<UploadResult>('upload_image', {
-    input: {
-      file_name: file.name,
-      mime_type: resolveImageMimeType(file),
-      bytes,
-      width,
-      height,
-      account_name: normalizedAccountName,
-      category,
-      tags,
-      attachable_id: context?.attachable_id ?? null,
-      referer_url: context?.document_url ?? null,
-    },
+  const request = {
+    ...baseRequest,
+    attachable_id: context?.attachable_id ?? null,
+    referer_url: context?.document_url ?? null,
+  };
+  recordUploadLog({
+    requestId,
+    phase: 'prepared',
+    title: '准备上传图片',
+    accountName: normalizedAccountName,
+    fileName: file.name,
+    fileSize: file.size,
+    mimeType,
+    request,
   });
+
+  try {
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const sentRequest = {
+      ...request,
+      byte_count: bytes.length,
+      bytes: `[OMITTED: ${bytes.length} bytes]`,
+    };
+    recordUploadLog({
+      requestId,
+      phase: 'sent',
+      title: '已发送 Tauri 上传命令',
+      accountName: normalizedAccountName,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType,
+      durationMs: Math.round(performance.now() - startedAt),
+      request: sentRequest,
+    });
+
+    const result = await invoke<UploadResult>('upload_image', {
+      input: {
+        file_name: file.name,
+        mime_type: mimeType,
+        bytes,
+        width,
+        height,
+        account_name: normalizedAccountName,
+        category,
+        tags,
+        attachable_id: context?.attachable_id ?? null,
+        referer_url: context?.document_url ?? null,
+      },
+    });
+
+    recordUploadLog({
+      requestId,
+      phase: 'success',
+      title: result.deduplicated ? '复用历史图片链接' : '语雀上传响应成功',
+      accountName: normalizedAccountName,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType,
+      durationMs: Math.round(performance.now() - startedAt),
+      request: sentRequest,
+      response: {
+        command: 'upload_image',
+        status: 'success',
+        deduplicated: result.deduplicated,
+        asset: {
+          id: result.asset.id,
+          remote_url: result.asset.remote_url,
+          account_name: result.asset.account_name,
+          uploaded_at: result.asset.uploaded_at,
+          category: result.asset.category,
+          tags: result.asset.tags,
+          cache_status: result.asset.cache_status,
+        },
+      },
+    });
+    return result;
+  } catch (error) {
+    const message = normalizeInvokeError(error);
+    recordUploadLog({
+      requestId,
+      phase: 'error',
+      title: '语雀上传响应失败',
+      accountName: normalizedAccountName,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType,
+      durationMs: Math.round(performance.now() - startedAt),
+      request,
+      response: {
+        command: 'upload_image',
+        status: 'error',
+        message,
+      },
+      error: message,
+    });
+    throw error;
+  }
 }
 
 export async function saveYuqueDocument(
