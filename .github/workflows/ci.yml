@@ -31,6 +31,7 @@ jobs:
           python - <<'PY'
           import base64
           import gzip
+          import zlib
           from pathlib import Path
 
           files = {
@@ -42,10 +43,15 @@ jobs:
               ".queue-enhancement-payload/main.tsx.b64": "src/main.tsx",
           }
           for source, destination in files.items():
-              payload = Path(source).read_text().strip()
+              packed = base64.b64decode(Path(source).read_text().strip())
+              try:
+                  decoded = gzip.decompress(packed)
+              except gzip.BadGzipFile:
+                  print(f"CRC fallback: {source}")
+                  decoded = zlib.decompress(packed[10:-8], -zlib.MAX_WBITS)
               target = Path(destination)
               target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(gzip.decompress(base64.b64decode(payload)))
+              target.write_bytes(decoded)
           PY
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           rm -rf .queue-enhancement-payload
