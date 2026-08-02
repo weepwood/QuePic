@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use reqwest::{header::ACCEPT, redirect::Policy, Client, Response};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, USER_AGENT},
+    redirect::Policy,
+    Client, Response,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
@@ -9,6 +13,8 @@ use crate::openapi_token;
 
 const YUQUE_API_BASE: &str = "https://www.yuque.com/api/v2";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+const BROWSER_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7";
 
 #[derive(Debug, Deserialize)]
 pub struct SaveYuqueDocumentInput {
@@ -307,8 +313,19 @@ async fn request_text(response: Response, action: &str) -> Result<String, String
     Err(format!("{action}失败（HTTP {}）：{message}", status.as_u16()))
 }
 
+fn openapi_default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(BROWSER_USER_AGENT));
+    headers.insert(
+        ACCEPT_LANGUAGE,
+        HeaderValue::from_static(BROWSER_ACCEPT_LANGUAGE),
+    );
+    headers
+}
+
 fn secure_client() -> Result<Client, String> {
     Client::builder()
+        .default_headers(openapi_default_headers())
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(120))
         .redirect(Policy::none())
@@ -441,9 +458,11 @@ fn extract_error_message(body: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use reqwest::header::{ACCEPT_LANGUAGE, USER_AGENT};
+
     use super::{
-        append_markdown, build_document_url, extract_error_message, parse_yuque_url,
-        validate_account_name,
+        append_markdown, build_document_url, extract_error_message, openapi_default_headers,
+        parse_yuque_url, validate_account_name, BROWSER_ACCEPT_LANGUAGE, BROWSER_USER_AGENT,
     };
 
     #[test]
@@ -500,5 +519,20 @@ mod tests {
         assert!(validate_account_name(&"账号".repeat(40)).is_ok());
         assert!(validate_account_name(&"账号".repeat(41)).is_err());
         assert!(validate_account_name("账号\n名称").is_err());
+    }
+
+    #[test]
+    fn openapi_requests_use_browser_headers() {
+        let headers = openapi_default_headers();
+        assert_eq!(
+            headers.get(USER_AGENT).and_then(|value| value.to_str().ok()),
+            Some(BROWSER_USER_AGENT)
+        );
+        assert_eq!(
+            headers
+                .get(ACCEPT_LANGUAGE)
+                .and_then(|value| value.to_str().ok()),
+            Some(BROWSER_ACCEPT_LANGUAGE)
+        );
     }
 }
