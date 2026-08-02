@@ -11,6 +11,12 @@ import type {
   YuqueDocumentResult,
 } from '../types';
 
+const DEFAULT_ACCOUNT = 'default';
+
+function activeAccountName(): string {
+  return localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
+}
+
 function resolveImageMimeType(file: File): string {
   if (file.type.startsWith('image/')) return file.type;
   const extension = file.name.split('.').pop()?.toLowerCase();
@@ -31,7 +37,7 @@ function resolveImageMimeType(file: File): string {
 }
 
 export async function listAssets(): Promise<AssetRecord[]> {
-  return invoke<AssetRecord[]>('list_assets');
+  return invoke<AssetRecord[]>('list_assets', { accountName: activeAccountName() });
 }
 
 export async function deleteAsset(id: number): Promise<void> {
@@ -89,11 +95,11 @@ export async function ensurePreview(
 }
 
 export async function getCacheStats(): Promise<CacheStats> {
-  return invoke<CacheStats>('cache_stats');
+  return invoke<CacheStats>('cache_stats', { accountName: activeAccountName() });
 }
 
 export async function clearPreviewCache(): Promise<CacheStats> {
-  return invoke<CacheStats>('clear_preview_cache');
+  return invoke<CacheStats>('clear_preview_cache', { accountName: activeAccountName() });
 }
 
 export async function getUploadQuotaStatus(accountName: string): Promise<UploadQuotaStatus> {
