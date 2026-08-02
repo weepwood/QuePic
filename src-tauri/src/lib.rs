@@ -565,8 +565,11 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("账号名称不能为空。".into());
     }
-    if value.len() > 80 {
-        return Err("账号名称过长。".into());
+    if value.chars().count() > 80 {
+        return Err("账号名称不能超过 80 个字符。".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("账号名称包含无效控制字符。".into());
     }
     Ok(value.to_string())
 }
