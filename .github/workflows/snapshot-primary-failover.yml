@@ -1,0 +1,45 @@
+name: Snapshot primary failover implementation
+
+on:
+  push:
+    branches: [feat/primary-account-failover]
+    paths: [.github/workflows/snapshot-primary-failover.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/primary-account-failover
+      - name: Collect status and failed logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=feat/primary-account-failover&per_page=30")"
+          run="$(jq -c '[.workflow_runs[] | select(.name == "Implement primary account failover")][0] // empty' <<<"$runs")"
+          if [[ -z "$run" ]]; then
+            echo '{"error":"implementation run not found"}' > primary-failover-status.json
+            : > primary-failover-failed.log
+          else
+            run_id="$(jq -r '.id' <<<"$run")"
+            jobs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100")"
+            jq -n --argjson run "$run" --argjson jobs "$jobs" '{run:{id:$run.id,status:$run.status,conclusion:$run.conclusion,html_url:$run.html_url,head_sha:$run.head_sha},jobs:[$jobs.jobs[]|{id,name,status,conclusion,steps:[.steps[]|{name,status,conclusion}]}]}' > primary-failover-status.json
+            : > primary-failover-failed.log
+            for job_id in $(jq -r '.jobs[] | select(.conclusion == "failure") | .id' <<<"$jobs"); do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" >> primary-failover-failed.log || true
+            done
+          fi
+      - name: Commit snapshot
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add primary-failover-status.json primary-failover-failed.log
+          git commit -m 'chore: snapshot primary failover status' || exit 0
+          git push origin HEAD:feat/primary-account-failover
