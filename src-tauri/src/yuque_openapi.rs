@@ -47,10 +47,7 @@ struct YuqueBook {
 pub async fn create_yuque_document(
     input: CreateYuqueDocumentInput,
 ) -> Result<YuqueDocumentResult, String> {
-    let account_name = input.account_name.trim();
-    if account_name.is_empty() || account_name.len() > 80 {
-        return Err("账号名称无效。".into());
-    }
+    let account_name = validate_account_name(&input.account_name)?;
     let token = openapi_token::load(account_name)?;
     if input.book_id <= 0 {
         return Err("知识库 ID 必须是正整数。".into());
@@ -130,6 +127,20 @@ pub async fn create_yuque_document(
     })
 }
 
+fn validate_account_name(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("账号名称不能为空。".into());
+    }
+    if value.chars().count() > 80 {
+        return Err("账号名称不能超过 80 个字符。".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("账号名称包含无效控制字符。".into());
+    }
+    Ok(value)
+}
+
 fn build_document_url(book: Option<&YuqueBook>, slug: &str) -> Option<String> {
     let namespace = book?.namespace.as_deref()?.trim().trim_matches('/');
     let slug = slug.trim().trim_matches('/');
@@ -141,20 +152,19 @@ fn build_document_url(book: Option<&YuqueBook>, slug: &str) -> Option<String> {
 
 fn extract_error_message(body: &str) -> Option<String> {
     let value: Value = serde_json::from_str(body).ok()?;
-    let message = [
+    [
         value.get("message"),
         value.get("error"),
         value.get("data").and_then(|data| data.get("message")),
     ]
     .into_iter()
     .flatten()
-    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned));
-    message
+    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_document_url, extract_error_message, YuqueBook};
+    use super::{build_document_url, extract_error_message, validate_account_name, YuqueBook};
 
     #[test]
     fn builds_document_url_from_namespace() {
@@ -171,5 +181,12 @@ mod tests {
             extract_error_message(r#"{"data":{"message":"token 无效"}}"#),
             Some("token 无效".into())
         );
+    }
+
+    #[test]
+    fn accepts_multibyte_account_names_by_character_count() {
+        assert!(validate_account_name(&"账号".repeat(40)).is_ok());
+        assert!(validate_account_name(&"账号".repeat(41)).is_err());
+        assert!(validate_account_name("账号\n名称").is_err());
     }
 }
