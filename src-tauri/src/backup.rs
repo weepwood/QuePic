@@ -17,6 +17,7 @@ use crate::{accounts, database, preview, AppState};
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
 const MAX_ARCHIVE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+const MAX_SETTING_TEXT_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortableSettings {
@@ -26,6 +27,26 @@ pub struct PortableSettings {
     pub book_id: String,
     #[serde(default)]
     pub account_names: Vec<String>,
+    #[serde(default)]
+    pub primary_account: String,
+    #[serde(default = "default_account_failover_enabled")]
+    pub account_failover_enabled: bool,
+    #[serde(default)]
+    pub knowledge_base_url: String,
+    #[serde(default)]
+    pub document_url: String,
+    #[serde(default)]
+    pub upload_tags: String,
+    #[serde(default = "default_library_view")]
+    pub library_view: String,
+}
+
+fn default_account_failover_enabled() -> bool {
+    true
+}
+
+fn default_library_view() -> String {
+    "original".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +83,7 @@ pub async fn export_backup(
     include_library: bool,
     include_cache: bool,
 ) -> Result<BackupResult, String> {
+    validate_portable_settings(&settings)?;
     let include_library = include_library || include_cache;
     let default_name = format!(
         "QuePic-backup-{}.quepic-backup",
@@ -258,6 +280,7 @@ fn restore_backup_archive(
         return Err("该备份声称包含凭据，QuePic 已拒绝导入。".into());
     }
     let settings: PortableSettings = read_json(&mut archive, "settings.json")?;
+    validate_portable_settings(&settings)?;
     if !restore_library {
         accounts::import_account_names(database_path, &settings.account_names)?;
         return Ok(ImportResult {
@@ -325,6 +348,67 @@ fn restore_backup_archive(
             0
         },
     })
+}
+
+fn validate_portable_settings(settings: &PortableSettings) -> Result<(), String> {
+    validate_setting_text("当前账号", &settings.active_account, 80)?;
+    validate_setting_text("主账号", &settings.primary_account, 80)?;
+    validate_setting_text("上传分类", &settings.upload_category, 80)?;
+    validate_setting_text("旧知识库 ID", &settings.book_id, 256)?;
+    validate_setting_text(
+        "知识库地址",
+        &settings.knowledge_base_url,
+        MAX_SETTING_TEXT_BYTES,
+    )?;
+    validate_setting_text(
+        "目标文档地址",
+        &settings.document_url,
+        MAX_SETTING_TEXT_BYTES,
+    )?;
+    validate_setting_text("上传标签", &settings.upload_tags, MAX_SETTING_TEXT_BYTES)?;
+    if !matches!(settings.library_view.as_str(), "" | "original" | "square") {
+        return Err("备份中的图库显示模式无效。".into());
+    }
+    if settings.account_names.len() > 500 {
+        return Err("备份中的账号数量超过允许范围。".into());
+    }
+    for account_name in &settings.account_names {
+        validate_setting_text("账号名称", account_name, 80)?;
+    }
+    validate_yuque_setting_url("知识库地址", &settings.knowledge_base_url, false)?;
+    validate_yuque_setting_url("目标文档地址", &settings.document_url, true)?;
+    Ok(())
+}
+
+fn validate_setting_text(name: &str, value: &str, maximum: usize) -> Result<(), String> {
+    if value.len() > maximum {
+        return Err(format!("备份中的{name}超过允许长度。"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("备份中的{name}包含无效控制字符。"));
+    }
+    Ok(())
+}
+
+fn validate_yuque_setting_url(
+    name: &str,
+    value: &str,
+    require_document: bool,
+) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| format!("备份中的{name}无效。"))?;
+    if parsed.scheme() != "https"
+        || !matches!(parsed.host_str(), Some("yuque.com" | "www.yuque.com"))
+    {
+        return Err(format!("备份中的{name}必须是 HTTPS 语雀地址。"));
+    }
+    let segment_count = parsed.path_segments().map(Iterator::count).unwrap_or(0);
+    if segment_count < if require_document { 3 } else { 2 } {
+        return Err(format!("备份中的{name}路径不完整。"));
+    }
+    Ok(())
 }
 
 fn snapshot_database(source: &Path, target: &Path) -> Result<(), String> {
@@ -785,6 +869,22 @@ fn nonce() -> u128 {
 mod tests {
     use super::*;
 
+    fn sample_settings() -> PortableSettings {
+        PortableSettings {
+            active_account: "default".into(),
+            allow_wordpress_fallback: false,
+            upload_category: "未分类".into(),
+            book_id: String::new(),
+            account_names: vec!["default".into()],
+            primary_account: "default".into(),
+            account_failover_enabled: true,
+            knowledge_base_url: "https://www.yuque.com/weepwood/index".into(),
+            document_url: "https://www.yuque.com/weepwood/index/quepic".into(),
+            upload_tags: "截图,资料".into(),
+            library_view: "original".into(),
+        }
+    }
+
     #[test]
     fn rejects_oversized_archives() {
         let mut total = MAX_ARCHIVE_BYTES;
@@ -793,16 +893,33 @@ mod tests {
 
     #[test]
     fn portable_settings_do_not_contain_secrets() {
-        let settings = PortableSettings {
-            active_account: "default".into(),
-            allow_wordpress_fallback: false,
-            upload_category: "未分类".into(),
-            book_id: "123".into(),
-            account_names: vec!["default".into()],
-        };
-        let json = serde_json::to_string(&settings).unwrap();
+        let json = serde_json::to_string(&sample_settings()).unwrap();
         assert!(!json.contains("cookie"));
         assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn old_settings_backups_receive_safe_defaults() {
+        let settings: PortableSettings = serde_json::from_str(
+            r#"{
+                "active_account":"default",
+                "allow_wordpress_fallback":false,
+                "upload_category":"未分类",
+                "book_id":"",
+                "account_names":["default"]
+            }"#,
+        )
+        .unwrap();
+        assert!(settings.account_failover_enabled);
+        assert_eq!(settings.library_view, "original");
+        assert!(settings.primary_account.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_portable_urls_before_side_effects() {
+        let mut settings = sample_settings();
+        settings.document_url = "https://example.com/private".into();
+        assert!(validate_portable_settings(&settings).is_err());
     }
 
     #[test]
@@ -824,13 +941,10 @@ mod tests {
             includes_cache: false,
             credentials_included: false,
         };
-        let settings = PortableSettings {
-            active_account: "工作".into(),
-            allow_wordpress_fallback: false,
-            upload_category: "未分类".into(),
-            book_id: String::new(),
-            account_names: vec!["工作".into()],
-        };
+        let mut settings = sample_settings();
+        settings.active_account = "工作".into();
+        settings.primary_account = "工作".into();
+        settings.account_names = vec!["工作".into()];
         write_json(&mut archive, "manifest.json", &manifest).unwrap();
         write_json(&mut archive, "settings.json", &settings).unwrap();
         archive.finish().unwrap();

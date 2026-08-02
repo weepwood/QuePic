@@ -126,6 +126,35 @@ export interface UploadContextResult {
   source: 'openapi' | 'session' | string;
 }
 
+export interface PortableSettings {
+  active_account: string;
+  allow_wordpress_fallback: boolean;
+  upload_category: string;
+  book_id: string;
+  account_names: string[];
+  primary_account: string;
+  account_failover_enabled: boolean;
+  knowledge_base_url: string;
+  document_url: string;
+  upload_tags: string;
+  library_view: 'original' | 'square' | string;
+}
+
+export interface BackupResult {
+  cancelled: boolean;
+  path: string | null;
+  includes_library: boolean;
+  includes_cache: boolean;
+}
+
+export interface ImportResult {
+  cancelled: boolean;
+  settings: PortableSettings | null;
+  restored_library: boolean;
+  restored_cache: boolean;
+  restored_cache_files: number;
+}
+
 export interface SaveYuqueDocumentInput {
   account_name: string;
   knowledge_base_url: string;
