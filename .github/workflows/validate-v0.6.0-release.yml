@@ -1,0 +1,78 @@
+name: Validate v0.6.0 release
+
+on:
+  push:
+    branches: [validation/v0.6.0-release]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  validate:
+    if: github.event.head_commit.message != 'chore: 记录 v0.6.0 发布验证结果'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: validation/v0.6.0-release
+      - name: Wait for public release and both installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          release_run_id=""
+          release_json=""
+          jobs_json="[]"
+          valid=false
+
+          for attempt in $(seq 1 120); do
+            runs_json=$(gh api -X GET "repos/${repo}/actions/workflows/release.yml/runs" -f branch=main -f event=push -f per_page=20)
+            release_run_id=$(jq -r '[.workflow_runs[] | select(.head_sha == "68c8c939d1f6124f6dc1d6987496d52c2f4697db")][0].id // empty' <<<"$runs_json")
+            if [ -n "$release_run_id" ]; then
+              run_json=$(gh api "repos/${repo}/actions/runs/${release_run_id}")
+              jobs_json=$(gh api "repos/${repo}/actions/runs/${release_run_id}/jobs?per_page=20" | jq '.jobs')
+              run_status=$(jq -r '.status' <<<"$run_json")
+              run_conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+            else
+              run_status="missing"
+              run_conclusion=""
+            fi
+
+            if release_json=$(gh api "repos/${repo}/releases/tags/v0.6.0" 2>/dev/null); then
+              assets=$(jq -r '[.assets[].name]' <<<"$release_json")
+              has_exe=$(jq -r 'any(.assets[].name; endswith(".exe"))' <<<"$release_json")
+              has_dmg=$(jq -r 'any(.assets[].name; endswith(".dmg"))' <<<"$release_json")
+              draft=$(jq -r '.draft' <<<"$release_json")
+              prerelease=$(jq -r '.prerelease' <<<"$release_json")
+              if [ "$run_status" = "completed" ] && [ "$run_conclusion" = "success" ] && [ "$has_exe" = "true" ] && [ "$has_dmg" = "true" ] && [ "$draft" = "false" ] && [ "$prerelease" = "false" ]; then
+                valid=true
+                break
+              fi
+            else
+              release_json=""
+              assets="[]"
+            fi
+            sleep 10
+          done
+
+          if [ -z "$release_json" ]; then
+            release_json='{}'
+          fi
+          jq -n \
+            --argjson valid "$valid" \
+            --arg release_run_id "$release_run_id" \
+            --argjson release "$release_json" \
+            --argjson jobs "$jobs_json" \
+            '{valid:$valid, release_run_id:$release_run_id, release:$release, jobs:$jobs}' \
+            > RELEASE_VALIDATION_v0.6.0.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add RELEASE_VALIDATION_v0.6.0.json
+          git commit -m "chore: 记录 v0.6.0 发布验证结果"
+          git push origin HEAD:validation/v0.6.0-release
+
+          test "$valid" = "true"
