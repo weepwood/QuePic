@@ -55,17 +55,19 @@ jobs:
           """,
           )
 
-          old_reset = """          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
-                    await rescheduleItems(accountItems, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');"""
-          new_reset = """          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
-                    await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');"""
-          replace_once(old_reset, new_reset)
+          replace_once(
+          """          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
+                    await rescheduleItems(accountItems, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');""",
+          """          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
+                    await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');""",
+          )
 
-          old_overflow = """          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
-                    await rescheduleItems(overflow, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');"""
-          new_overflow = """          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
-                    await rescheduleItems(overflow, resetAt, '等待下一小时上传额度');"""
-          replace_once(old_overflow, new_overflow)
+          replace_once(
+          """          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
+                    await rescheduleItems(overflow, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');""",
+          """          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
+                    await rescheduleItems(overflow, resetAt, '等待下一小时上传额度');""",
+          )
 
           replace_once(
           """    } catch (error) {
@@ -129,23 +131,6 @@ jobs:
           }
 
           function formatScheduleTime(value: number): string {
-          """,
-          )
-
-          replace_once(
-          """      await removeStoredQueueItem(id);
-            await Promise.all([refreshAssets(), refreshCacheStats()]);
-            if (activeAccountRef.current === item.accountName) {
-              await refreshAccountStatus(item.accountName);
-            }
-            await refreshProfiles();
-          """,
-          """      await removeStoredQueueItem(id);
-              await Promise.all([refreshAssets(), refreshCacheStats()]);
-              if (activeAccountRef.current === item.accountName) {
-                await refreshAccountStatus(item.accountName);
-              }
-              await refreshProfiles();
           """,
           )
 
