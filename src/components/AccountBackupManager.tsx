@@ -19,6 +19,11 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import {
+  getCachedAppSettings,
+  replaceAppSettingsFromBackup,
+  updateAppSettings,
+} from '../lib/appSettings';
 import { exportBackup as exportBackupArchive, importBackup as importBackupArchive } from '../lib/backup';
 import { setMaintenanceState } from '../lib/maintenance';
 import type { AccountProfile, PortableSettings } from '../types';
@@ -37,7 +42,9 @@ export function AccountBackupManager() {
   const [busy, setBusy] = useState<BusyAction>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const activeAccount = localStorage.getItem('quepic-account') || DEFAULT_ACCOUNT;
+  const activeAccount = getCachedAppSettings()?.active_account
+    || localStorage.getItem('quepic-account')
+    || DEFAULT_ACCOUNT;
 
   useEffect(() => {
     let disposed = false;
@@ -109,10 +116,17 @@ export function AccountBackupManager() {
     }
   };
 
-  const switchAccount = (accountName: string) => {
+  const switchAccount = async (accountName: string) => {
     if (accountName === activeAccount) return;
-    localStorage.setItem('quepic-account', accountName);
-    window.location.reload();
+    setBusy('accounts');
+    setMessage(null);
+    try {
+      await updateAppSettings({ active_account: accountName });
+      window.location.reload();
+    } catch (error) {
+      setMessage({ type: 'error', text: normalizeError(error) });
+      setBusy(null);
+    }
   };
 
   const openLogin = async (accountName: string) => {
@@ -145,19 +159,34 @@ export function AccountBackupManager() {
     }
   };
 
-  const portableSettings = (): PortableSettings => ({
-    active_account: activeAccount,
-    allow_wordpress_fallback: localStorage.getItem('quepic-wordpress-fallback') === 'true',
-    upload_category: localStorage.getItem('quepic-upload-category') || '未分类',
-    book_id: localStorage.getItem('quepic-book-id') || '',
-    account_names: accounts.map((account) => account.account_name),
-    primary_account: localStorage.getItem('quepic-primary-account') || activeAccount,
-    account_failover_enabled: localStorage.getItem('quepic-account-failover') !== 'false',
-    knowledge_base_url: localStorage.getItem('quepic-knowledge-base-url') || '',
-    document_url: localStorage.getItem('quepic-document-url') || '',
-    upload_tags: localStorage.getItem('quepic-upload-tags') || '',
-    library_view: localStorage.getItem('quepic-library-view') === 'square' ? 'square' : 'original',
-  });
+  const portableSettings = (): PortableSettings => {
+    const settings = getCachedAppSettings();
+    return {
+      active_account: settings?.active_account || activeAccount,
+      allow_wordpress_fallback: settings?.allow_wordpress_fallback
+        ?? (localStorage.getItem('quepic-wordpress-fallback') === 'true'),
+      upload_category: settings?.upload_category
+        || localStorage.getItem('quepic-upload-category')
+        || '未分类',
+      book_id: localStorage.getItem('quepic-book-id') || '',
+      account_names: accounts.map((account) => account.account_name),
+      primary_account: settings?.primary_account
+        || localStorage.getItem('quepic-primary-account')
+        || activeAccount,
+      account_failover_enabled: settings?.account_failover_enabled
+        ?? (localStorage.getItem('quepic-account-failover') !== 'false'),
+      knowledge_base_url: settings?.knowledge_base_url
+        || localStorage.getItem('quepic-knowledge-base-url')
+        || '',
+      document_url: settings?.document_url
+        || localStorage.getItem('quepic-document-url')
+        || '',
+      upload_tags: settings?.upload_tags
+        || localStorage.getItem('quepic-upload-tags')
+        || '',
+      library_view: settings?.library_view === 'square' ? 'square' : 'original',
+    };
+  };
 
   const runBackupMaintenance = async <T,>(
     action: 'export' | 'import',
@@ -217,7 +246,9 @@ export function AccountBackupManager() {
         restoreCache,
       ));
       if (result.cancelled || !result.settings) return;
-      applyPortableSettings(result.settings);
+      await replaceAppSettingsFromBackup(result.settings);
+      if (result.settings.book_id) localStorage.setItem('quepic-book-id', result.settings.book_id);
+      else localStorage.removeItem('quepic-book-id');
       setMessage({
         type: 'success',
         text: mode === 'full'
@@ -286,7 +317,7 @@ export function AccountBackupManager() {
                           <span className={account.token_configured ? 'ready' : ''}>{account.token_configured ? <ShieldCheck size={13} /> : <KeyRound size={13} />}Token</span>
                         </div>
                         <div className="account-actions">
-                          {!active && <button type="button" disabled={Boolean(busy)} onClick={() => switchAccount(account.account_name)}>切换</button>}
+                          {!active && <button type="button" disabled={Boolean(busy)} onClick={() => void switchAccount(account.account_name)}>切换</button>}
                           <button type="button" disabled={Boolean(busy)} onClick={() => void openLogin(account.account_name)}>打开登录</button>
                           {completingLogin && <button className="primary" type="button" disabled={Boolean(busy)} onClick={() => void captureLogin(account.account_name)}>保存会话</button>}
                         </div>
@@ -325,23 +356,6 @@ export function AccountBackupManager() {
       {maintenanceOverlay}
     </>
   );
-}
-
-function applyPortableSettings(settings: PortableSettings) {
-  localStorage.setItem('quepic-account', settings.active_account || DEFAULT_ACCOUNT);
-  localStorage.setItem('quepic-wordpress-fallback', String(settings.allow_wordpress_fallback));
-  localStorage.setItem('quepic-upload-category', settings.upload_category || '未分类');
-  localStorage.setItem('quepic-primary-account', settings.primary_account || settings.active_account || DEFAULT_ACCOUNT);
-  localStorage.setItem('quepic-account-failover', String(settings.account_failover_enabled !== false));
-  localStorage.setItem('quepic-library-view', settings.library_view === 'square' ? 'square' : 'original');
-  if (settings.upload_tags) localStorage.setItem('quepic-upload-tags', settings.upload_tags);
-  else localStorage.removeItem('quepic-upload-tags');
-  if (settings.knowledge_base_url) localStorage.setItem('quepic-knowledge-base-url', settings.knowledge_base_url);
-  else localStorage.removeItem('quepic-knowledge-base-url');
-  if (settings.document_url) localStorage.setItem('quepic-document-url', settings.document_url);
-  else localStorage.removeItem('quepic-document-url');
-  if (settings.book_id) localStorage.setItem('quepic-book-id', settings.book_id);
-  else localStorage.removeItem('quepic-book-id');
 }
 
 function normalizeError(error: unknown): string {
