@@ -178,7 +178,15 @@ async function createQueueItem(file: File, accountName: string, category: string
 
 async function hydrateQueueItem(item: StoredUploadQueueItem): Promise<UploadQueueItem> {
   const preview = await createPreview(item.file);
-  return { ...item, ...preview };
+  const validSchedule = item.status !== 'scheduled'
+    || (typeof item.scheduledAt === 'number' && Number.isFinite(item.scheduledAt) && item.scheduledAt > 0);
+  return {
+    ...item,
+    status: validSchedule ? item.status : 'waiting',
+    scheduledAt: validSchedule ? item.scheduledAt : null,
+    error: validSchedule ? item.error : '计划时间无效，已恢复为等待上传。',
+    ...preview,
+  };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -690,19 +698,25 @@ export default function App() {
         }
         const accountQuota = await getUploadQuotaStatus(account);
         if (accountQuota.remaining <= 0) {
-          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
-          await rescheduleItems(accountItems, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');
+          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
+          await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');
           continue;
         }
         for (const item of accountItems.slice(0, accountQuota.remaining)) await uploadOne(item.id);
         const overflow = accountItems.slice(accountQuota.remaining);
         if (overflow.length > 0) {
-          const resetAt = accountQuota.reset_at ? Date.parse(accountQuota.reset_at) + 1_000 : Date.now() + AUTO_UPLOAD_DELAY_MS;
-          await rescheduleItems(overflow, Math.max(resetAt, Date.now() + 60_000), '等待下一小时上传额度');
+          const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
+          await rescheduleItems(overflow, resetAt, '等待下一小时上传额度');
         }
       }
       if (activeAccountRef.current) await refreshAccountStatus(activeAccountRef.current);
     } catch (error) {
+      const retryAt = Date.now() + 5 * 60 * 1000;
+      try {
+        await rescheduleItems(due, retryAt, '自动检查失败，五分钟后重试');
+      } catch {
+        // 保留原错误；持久队列写入失败会在下一次状态变化时再次暴露。
+      }
       showToast('error', `自动上传失败：${normalizeError(error)}`);
     } finally {
       autoUploadRunningRef.current = false;
@@ -710,15 +724,11 @@ export default function App() {
   }, [markQueueItem, refreshAccountStatus, rescheduleItems, showToast, uploadOne]);
 
   useEffect(() => {
-    const scheduled = queue
-      .filter((item) => item.status === 'scheduled' && item.scheduledAt)
-      .map((item) => item.scheduledAt as number);
-    if (scheduled.length === 0) return undefined;
-    const next = Math.min(...scheduled);
-    const delay = Math.max(0, Math.min(next - Date.now(), 60_000));
-    const timer = window.setTimeout(() => void runDueUploads(), delay);
-    return () => window.clearTimeout(timer);
-  }, [queue, runDueUploads]);
+    if (!queueReady) return undefined;
+    void runDueUploads();
+    const timer = window.setInterval(() => void runDueUploads(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [queueReady, runDueUploads]);
 
   const copyText = useCallback(async (value: string) => {
     await navigator.clipboard.writeText(value);
@@ -1140,6 +1150,13 @@ function formatDuration(seconds: number): string {
 function formatResetTime(value: string | null): string {
   if (!value) return '稍后';
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function resolveRetryTimestamp(value: string | null): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed)
+    ? Math.max(parsed + 1_000, Date.now() + 60_000)
+    : Date.now() + AUTO_UPLOAD_DELAY_MS;
 }
 
 function formatScheduleTime(value: number): string {
