@@ -1,0 +1,53 @@
+name: Apply image library frontend
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-frontend:
+    if: github.head_ref == 'feat/image-library-overhaul'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply frontend implementation
+        run: python3 .github/scripts/apply_image_library_frontend.py
+
+      - name: Install dependencies
+        run: npm install --silent
+
+      - name: Build React frontend
+        run: npm run build 2>&1 | tee /tmp/frontend-build.log
+
+      - name: Capture failure log
+        if: failure()
+        run: |
+          tail -n 260 /tmp/frontend-build.log > .github/image-library-frontend-build.log || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/image-library-frontend-build.log
+          git commit -m "chore: 保存图库界面构建失败日志" || true
+          git push origin HEAD:feat/image-library-overhaul || true
+
+      - name: Commit frontend implementation
+        run: |
+          rm -f package-lock.json .github/image-library-frontend-build.log
+          rm .github/scripts/apply_image_library_frontend.py
+          rm .github/workflows/apply-image-library-frontend.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: 重构图库分类、标签与瀑布流界面"
+          git push origin HEAD:feat/image-library-overhaul
