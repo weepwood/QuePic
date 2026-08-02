@@ -178,6 +178,10 @@ export async function getCredentialStatus(accountName: string): Promise<Credenti
   return invoke<CredentialStatus>('credential_status', { accountName });
 }
 
+export async function getCookieValue(accountName: string): Promise<string> {
+  return invoke<string>('reveal_cookie', { accountName });
+}
+
 export async function saveOpenApiToken(accountName: string, token: string): Promise<SecretStatus> {
   return invoke<SecretStatus>('save_openapi_token', { accountName, token });
 }
@@ -188,6 +192,10 @@ export async function clearOpenApiToken(accountName: string): Promise<void> {
 
 export async function getOpenApiTokenStatus(accountName: string): Promise<SecretStatus> {
   return invoke<SecretStatus>('openapi_token_status', { accountName });
+}
+
+export async function getOpenApiTokenValue(accountName: string): Promise<string> {
+  return invoke<string>('reveal_openapi_token', { accountName });
 }
 
 export async function ensurePreview(
@@ -227,11 +235,12 @@ export async function uploadImage(
   height: number | null,
   category: string,
   tags: string[],
+  contextAccountName = accountName,
 ): Promise<UploadResult> {
-  const context = getStoredUploadContext(accountName);
+  const context = getStoredUploadContext(accountName) || getStoredUploadContext(contextAccountName);
   if (!context) {
     throw new Error(
-      `账号“${accountName}”尚未绑定自己有权限的上传上下文文档；从账号可以不配置 Token，但必须先验证一个可访问的语雀文档 URL。`,
+      `主账号“${contextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`,
     );
   }
 

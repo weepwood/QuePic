@@ -28,6 +28,11 @@ pub fn openapi_token_status(account_name: String) -> Result<CredentialStatus, St
 }
 
 #[tauri::command]
+pub fn reveal_openapi_token(account_name: String) -> Result<String, String> {
+    load(&account_name)
+}
+
+#[tauri::command]
 pub fn clear_openapi_token(account_name: String) -> Result<(), String> {
     let account_name = normalize_account_name(&account_name)?;
     match entry(&account_name)?.delete_credential() {
