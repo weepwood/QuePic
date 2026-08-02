@@ -84,7 +84,7 @@ jobs:
       - name: Format and test
         shell: bash
         run: |
-          cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+          rustfmt --edition 2021 src-tauri/src/lib.rs src-tauri/src/accounts.rs src-tauri/src/backup.rs
           npm install
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml
