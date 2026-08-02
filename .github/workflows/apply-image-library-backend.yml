@@ -37,6 +37,44 @@ jobs:
             libdbus-1-dev \
             pkg-config
 
+      - name: Fix deterministic patch multiplicity
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply_image_library_backend.py')
+          text = path.read_text(encoding='utf-8')
+          first = '''text = replace_once(
+              text,
+              ''' + "'''            existing,\n            category,\n            sha256,'''," + '''
+              ''' + "'''            existing,\n            category,\n            input.tags.clone(),\n            sha256,'''," + '''
+              path,
+          )
+          '''
+          second = '''text = replace_once(
+              text,
+              ''' + "'''            existing,\n            category,\n            sha256,\n            input.mime_type,'''," + '''
+              ''' + "'''            existing,\n            category,\n            input.tags.clone(),\n            sha256,\n            input.mime_type,'''," + '''
+              path,
+          )
+          '''
+          replacement = '''old_reuse_call = """            existing,
+                      category,
+                      sha256,"""
+          if text.count(old_reuse_call) != 2:
+              raise SystemExit(f"src-tauri/src/lib.rs: expected two reuse calls, found {text.count(old_reuse_call)}")
+          text = text.replace(
+              old_reuse_call,
+              """            existing,
+                      category,
+                      input.tags.clone(),
+                      sha256,""",
+          )
+          '''
+          if first not in text or second not in text:
+              raise SystemExit('unable to locate reuse call patch blocks')
+          path.write_text(text.replace(first, replacement).replace(second, ''), encoding='utf-8')
+          PY
+
       - name: Apply backend patch
         run: python3 .github/scripts/apply_image_library_backend.py
 
