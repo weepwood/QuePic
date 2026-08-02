@@ -74,9 +74,10 @@ export interface UploadQuotaStatus {
   minimum_interval_seconds: number;
 }
 
-export interface CreateYuqueDocumentInput {
+export interface SaveYuqueDocumentInput {
   account_name: string;
-  book_id: number;
+  knowledge_base_url: string;
+  document_url: string | null;
   title: string;
   body: string;
 }
@@ -86,4 +87,6 @@ export interface YuqueDocumentResult {
   title: string;
   slug: string;
   url: string | null;
+  created: boolean;
+  namespace: string;
 }
