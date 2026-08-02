@@ -11,9 +11,34 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply_strict_original:
+    name: Apply strict original update
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply source update
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/apply-strict-original.trigger ]; then
+            echo "No strict original update requested."
+            exit 0
+          fi
+          python .github/apply-strict-original.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: 原图模式禁止退回缩略图"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
+
   frontend:
     name: React frontend
     runs-on: ubuntu-latest
