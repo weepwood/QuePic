@@ -134,15 +134,8 @@ fn clear_cookie(account_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_assets(
-    state: State<'_, AppState>,
-    account_name: String,
-) -> Result<Vec<AssetRecord>, String> {
-    let account_name = normalize_account_name(&account_name)?;
-    Ok(database::list_assets(&state.database_path)?
-        .into_iter()
-        .filter(|asset| asset.account_name == account_name)
-        .collect())
+fn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {
+    database::list_assets(&state.database_path)
 }
 
 #[tauri::command]
@@ -156,12 +149,8 @@ fn update_asset_category(
 }
 
 #[tauri::command]
-fn cache_stats(
-    state: State<'_, AppState>,
-    account_name: String,
-) -> Result<CacheStats, String> {
-    let account_name = normalize_account_name(&account_name)?;
-    account_cache_stats(&state.database_path, &account_name)
+fn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {
+    shared_cache_stats(&state.database_path)
 }
 
 #[tauri::command]
@@ -174,11 +163,7 @@ fn upload_quota_status(
 }
 
 #[tauri::command]
-async fn clear_preview_cache(
-    state: State<'_, AppState>,
-    account_name: String,
-) -> Result<CacheStats, String> {
-    let account_name = normalize_account_name(&account_name)?;
+async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, String> {
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
@@ -190,7 +175,7 @@ async fn clear_preview_cache(
             .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
         preview::clear_cache(&preview_cache_dir)?;
         database::clear_previews(&database_path)?;
-        account_cache_stats(&database_path, &account_name)
+        shared_cache_stats(&database_path)
     })
     .await
     .map_err(|error| format!("清理图片缓存任务失败：{error}"))?
@@ -505,14 +490,14 @@ async fn cache_and_record_task(
     .map_err(|error| format!("建立图片缓存任务失败：{error}"))?
 }
 
-fn account_cache_stats(path: &Path, account_name: &str) -> Result<CacheStats, String> {
+fn shared_cache_stats(path: &Path) -> Result<CacheStats, String> {
     let assets = database::list_assets(path)?;
     let mut asset_count = 0_i64;
     let mut cached_count = 0_i64;
     let mut cache_bytes = 0_i64;
     let mut counted_hashes = HashSet::new();
 
-    for asset in assets.into_iter().filter(|asset| asset.account_name == account_name) {
+    for asset in assets {
         asset_count += 1;
         if asset.cache_status == "ready" {
             cached_count += 1;

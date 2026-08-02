@@ -266,10 +266,9 @@ export default function App() {
     }
   }, [showToast]);
 
-  const refreshAssets = useCallback(async (targetAccount = activeAccountRef.current) => {
+  const refreshAssets = useCallback(async () => {
     try {
-      const nextAssets = await listAssets(targetAccount);
-      if (activeAccountRef.current !== targetAccount) return;
+      const nextAssets = await listAssets();
       setAssets(nextAssets);
       setSelected((current) => current
         ? nextAssets.find((asset) => asset.id === current.id) || null
@@ -280,10 +279,9 @@ export default function App() {
     }
   }, [showToast]);
 
-  const refreshCacheStats = useCallback(async (targetAccount = activeAccountRef.current) => {
+  const refreshCacheStats = useCallback(async () => {
     try {
-      const nextStats = await getCacheStats(targetAccount);
-      if (activeAccountRef.current === targetAccount) setCacheStats(nextStats);
+      setCacheStats(await getCacheStats());
     } catch (error) {
       showToast('error', normalizeError(error));
     }
@@ -312,14 +310,12 @@ export default function App() {
 
   const loadAccountContext = useCallback(async (targetAccount: string) => {
     const requestId = ++contextRequestRef.current;
-    setAssets([]);
-    setCacheStats(EMPTY_CACHE_STATS);
     setQuota(null);
     setCredentialReady(false);
     setTokenReady(false);
     await Promise.all([
-      refreshAssets(targetAccount),
-      refreshCacheStats(targetAccount),
+      refreshAssets(),
+      refreshCacheStats(),
       refreshAccountStatus(targetAccount),
     ]);
     if (requestId !== contextRequestRef.current) return;
@@ -339,12 +335,8 @@ export default function App() {
       localStorage.setItem('quepic-account', nextAccount);
       setAccountName(nextAccount);
       setAccountDraft(nextAccount);
-      setSelected(null);
-      setSelectedAssetIds(new Set());
-      setCategoryFilter('全部');
-      setSearch('');
       await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);
-      showToast('success', `已切换到账号“${nextAccount}”，上传与图片库上下文已同步。`);
+      showToast('success', `已切换到账号“${nextAccount}”。上传身份已更新，共享图库保持不变。`);
     } catch (error) {
       showToast('error', normalizeError(error));
     } finally {
@@ -553,10 +545,10 @@ export default function App() {
   const handleClearPreviewCache = async () => {
     setCacheBusy(true);
     try {
-      setCacheStats(await clearPreviewCache(accountName));
-      await refreshAssets(accountName);
+      setCacheStats(await clearPreviewCache());
+      await refreshAssets();
       setCacheEpoch((value) => value + 1);
-      showToast('success', '当前账号的本地缓存已清理。进入视口的图片会按需重建缩略图。');
+      showToast('success', '共享图库的本地缓存已清理。进入视口的图片会按需重建缩略图。');
     } catch (error) {
       showToast('error', normalizeError(error));
     } finally {
@@ -613,14 +605,11 @@ export default function App() {
       const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);
       markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
       await removeStoredQueueItem(id);
-      if (activeAccountRef.current === item.accountName) {
-        await Promise.all([
-          refreshAssets(item.accountName),
-          refreshCacheStats(item.accountName),
-          refreshAccountStatus(item.accountName),
-        ]);
-      }
-      await refreshProfiles();
+    await Promise.all([refreshAssets(), refreshCacheStats()]);
+    if (activeAccountRef.current === item.accountName) {
+      await refreshAccountStatus(item.accountName);
+    }
+    await refreshProfiles();
       return true;
     } catch (error) {
       const failed = markQueueItem(id, {
@@ -833,10 +822,10 @@ export default function App() {
   ];
 
   const pageInfo: Record<ViewKey, { title: string; description: string }> = {
-    upload: { title: '上传图片', description: '持久化上传队列，支持按账号隔离和一小时后自动续传。' },
+    upload: { title: '上传图片', description: '选择上传账号，所有上传结果统一进入共享图库。' },
     document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建或更新语雀文档。' },
-    library: { title: '图片库', description: '搜索、排序、批量分类和批量清理当前账号的图片内容。' },
-    settings: { title: '设置', description: '显式切换账号，管理语雀会话、Token、缓存与上传额度。' },
+    library: { title: '共享图片库', description: '集中管理所有账号上传的图片、分类和本地缓存。' },
+    settings: { title: '设置', description: '账号仅管理上传身份、语雀会话、Token 与独立额度。' },
   };
 
   return (
@@ -903,7 +892,7 @@ export default function App() {
                 <span className="drop-eyebrow">PERSISTENT UPLOAD QUEUE</span>
                 <span className="drop-icon"><UploadCloud size={34} /></span>
                 <h2>将图片拖到这里</h2>
-                <p>图片加入队列时绑定当前账号和分类；切换账号后不会串用凭据，也不会丢失待上传文件。</p>
+                <p>图片加入队列时绑定上传账号和分类；上传完成后统一进入共享图库，切换账号不会隐藏已有图片。</p>
                 <label className="upload-category-field">
                   <Tags size={16} />
                   <input value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
@@ -969,7 +958,7 @@ export default function App() {
             <div className="library-layout">
               <div className="library-main">
                 <div className="library-heading">
-                  <div><span>LOCAL FIRST ASSET INDEX · {accountName}</span><h2>图片内容管理</h2><p>使用分类、搜索、排序和批量操作整理当前账号的图片库。</p></div>
+                  <div><span>SHARED LOCAL FIRST ASSET INDEX</span><h2>共享图片内容管理</h2><p>所有账号使用同一个图库；账号切换只改变上传身份，不改变这里的内容。</p></div>
                   <div className="library-heading-controls">
                     <label className="search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名、分类、链接或类型" /></label>
                     <label className="library-sort"><ArrowUpDown size={16} /><select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}><option value="newest">最新上传</option><option value="oldest">最早上传</option><option value="name">文件名</option><option value="size">文件大小</option><option value="category">分类</option></select></label>
@@ -1020,7 +1009,7 @@ export default function App() {
                             <strong>{asset.file_name}</strong>
                             <span className="asset-category-tag">{asset.category || DEFAULT_CATEGORY}</span>
                             <span className={asset.cache_status === 'ready' ? 'asset-cache-state ready' : 'asset-cache-state'}>{asset.cache_status === 'ready' ? '已缓存' : '按需缓存'}</span>
-                            <small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)}</small>
+                            <small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)} · 来源：{asset.account_name}</small>
                           </div>
                         </article>
                       );
@@ -1038,6 +1027,7 @@ export default function App() {
                       <span>IMAGE DETAILS</span><h3>{selected.file_name}</h3>
                       <dl>
                         <div><dt>分类</dt><dd>{selected.category}</dd></div>
+                        <div><dt>来源账号</dt><dd>{selected.account_name}</dd></div>
                         <div><dt>尺寸</dt><dd>{selected.width && selected.height ? `${selected.width} × ${selected.height}` : '未知'}</dd></div>
                         <div><dt>格式</dt><dd>{selected.mime_type}</dd></div>
                         <div><dt>大小</dt><dd>{formatBytes(selected.file_size)}</dd></div>
@@ -1062,7 +1052,7 @@ export default function App() {
             <div className="settings-layout">
               <div className="settings-stack">
                 <div className="panel settings-panel account-manager-panel">
-                  <div className="panel-heading"><div><span>ACCOUNT CONTEXT</span><h2>账号管理与切换</h2><p>切换时同步刷新凭据、额度、图片库和缓存，不再重载页面或丢失上传队列。</p></div><UserRound size={20} /></div>
+                  <div className="panel-heading"><div><span>UPLOAD IDENTITIES</span><h2>上传账号管理</h2><p>账号分别保存凭据、Token 和上传额度；所有账号共同使用下方同一个图片库。</p></div><UserRound size={20} /></div>
                   <div className="account-create-row">
                     <label className="field"><span>账号名称</span><input value={accountDraft} onChange={(event) => setAccountDraft(event.target.value)} list="account-options" placeholder="例如：个人、工作" /></label>
                     <datalist id="account-options">{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name} />)}</datalist>
@@ -1071,7 +1061,7 @@ export default function App() {
                   <div className="account-profile-grid">
                     {accountProfiles.map((profile) => (
                       <button key={profile.account_name} className={profile.account_name === accountName ? 'account-profile active' : 'account-profile'} onClick={() => void handleSwitchAccount(profile.account_name)}>
-                        <strong>{profile.account_name}</strong><small>{profile.asset_count} 张图片 · {profile.cached_count} 张缓存</small><span>{profile.credential_configured ? '已登录' : '未登录'} · {profile.token_configured ? 'Token 已配置' : 'Token 未配置'}</span>
+                        <strong>{profile.account_name}</strong><small>{profile.asset_count} 条来源记录 · {profile.cached_count} 张已缓存</small><span>{profile.credential_configured ? '已登录' : '未登录'} · {profile.token_configured ? 'Token 已配置' : 'Token 未配置'}</span>
                       </button>
                     ))}
                   </div>
@@ -1120,10 +1110,10 @@ export default function App() {
                     <span><Globe2 size={17} /><span><strong>WordPress CDN 兼容兜底</strong><small>仅在本地、远程 URL 和语雀回源均失败时使用 `i3.wp.com`。</small></span></span>
                     <input className="switch-input" type="checkbox" checked={allowWordpressFallback} onChange={(event) => handleWordpressFallbackChange(event.target.checked)} />
                   </label>
-                  <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理当前账号缓存</button></div>
+                  <div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理共享图库缓存</button></div>
                 </div>
               </div>
-              <div className="guide"><ShieldCheck size={24} /><div><h3>受控访问策略</h3><ol><li>图片库、缓存统计和额度始终使用显式账号参数。</li><li>队列中的文件、分类和目标账号保存在本地 IndexedDB。</li><li>自动任务到期前会重新检查对应账号凭据和滚动额度。</li><li>额度不足时自动顺延到下一次可用时间。</li><li>OpenAPI Token 与 Cookie 均保存在系统密钥库。</li></ol></div></div>
+              <div className="guide"><ShieldCheck size={24} /><div><h3>共享图库策略</h3><ol><li>所有账号上传的图片统一进入同一个本地图库与分类体系。</li><li>每条记录保留来源账号，私有图片优先使用来源账号会话回源。</li><li>上传队列、Cookie、Token 和小时额度仍按账号隔离。</li><li>切换账号只改变新的上传身份，不影响图库筛选和当前选择。</li><li>共享缓存只保存一份，可在设置中统一清理和重建。</li></ol></div></div>
             </div>
           )}
         </section>

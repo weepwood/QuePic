@@ -37,8 +37,8 @@ function resolveImageMimeType(file: File): string {
   return extension ? mimeTypes[extension] || 'application/octet-stream' : 'application/octet-stream';
 }
 
-export async function listAssets(accountName = activeAccountName()): Promise<AssetRecord[]> {
-  return invoke<AssetRecord[]>('list_assets', { accountName });
+export async function listAssets(): Promise<AssetRecord[]> {
+  return invoke<AssetRecord[]>('list_assets');
 }
 
 export async function deleteAsset(id: number): Promise<void> {
@@ -103,12 +103,12 @@ export async function ensurePreview(
   });
 }
 
-export async function getCacheStats(accountName = activeAccountName()): Promise<CacheStats> {
-  return invoke<CacheStats>('cache_stats', { accountName });
+export async function getCacheStats(): Promise<CacheStats> {
+  return invoke<CacheStats>('cache_stats');
 }
 
-export async function clearPreviewCache(accountName = activeAccountName()): Promise<CacheStats> {
-  return invoke<CacheStats>('clear_preview_cache', { accountName });
+export async function clearPreviewCache(): Promise<CacheStats> {
+  return invoke<CacheStats>('clear_preview_cache');
 }
 
 export async function getUploadQuotaStatus(accountName: string): Promise<UploadQuotaStatus> {
