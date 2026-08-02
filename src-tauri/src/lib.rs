@@ -325,32 +325,39 @@ async fn upload_image(
     if let Some(existing) =
         database::find_by_hash_for_account(&database_path, &account_name, &sha256)?
     {
-        let existing = database::update_asset_category(&database_path, existing.id, &category)?;
-        let preview_missing = {
-            let _guard = cache_lock
-                .lock()
-                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
-            !preview::preview_exists(existing.original_path.as_deref(), existing.thumbnail_path.as_deref())
-        };
-        if preview_missing {
-            let _ = cache_and_record_task(
-                cache_lock,
-                preview_cache_dir,
-                database_path.clone(),
-                existing.id,
-                sha256,
-                input.mime_type.clone(),
-                cache_bytes,
-                "local".into(),
-            )
-            .await;
-        }
-        let asset = database::find_by_id(&database_path, existing.id)?.unwrap_or(existing);
-        return Ok(UploadResult { asset, deduplicated: true });
+        return reuse_existing_asset(
+            cache_lock,
+            preview_cache_dir,
+            database_path,
+            existing,
+            category,
+            sha256,
+            input.mime_type,
+            cache_bytes,
+        )
+        .await;
     }
 
     let cookie = credentials::load(&account_name)?;
     let upload_guard = upload_gate.lock().await;
+
+    if let Some(existing) =
+        database::find_by_hash_for_account(&database_path, &account_name, &sha256)?
+    {
+        drop(upload_guard);
+        return reuse_existing_asset(
+            cache_lock,
+            preview_cache_dir,
+            database_path,
+            existing,
+            category,
+            sha256,
+            input.mime_type,
+            cache_bytes,
+        )
+        .await;
+    }
+
     let quota = database::upload_quota_status(&database_path, &account_name)?;
     if quota.remaining <= 0 {
         let reset = quota.reset_at.unwrap_or_else(|| "稍后".into());
@@ -364,7 +371,6 @@ async fn upload_image(
     let file_size = input.bytes.len() as i64;
     let remote_url = yuque::upload(&cookie, &file_name, &input.mime_type, input.bytes).await?;
     database::mark_upload_attempt_success(&database_path, attempt_id)?;
-    drop(upload_guard);
 
     let asset = AssetRecord {
         id: 0,
@@ -404,6 +410,7 @@ async fn upload_image(
             }
         }
     };
+    drop(upload_guard);
 
     if let Err(error) = cache_and_record_task(
         cache_lock,
@@ -422,6 +429,48 @@ async fn upload_image(
 
     let refreshed = database::find_by_id(&database_path, saved_asset.id)?.unwrap_or(saved_asset);
     Ok(UploadResult { asset: refreshed, deduplicated })
+}
+
+async fn reuse_existing_asset(
+    cache_lock: Arc<Mutex<()>>,
+    preview_cache_dir: PathBuf,
+    database_path: PathBuf,
+    existing: AssetRecord,
+    category: String,
+    sha256: String,
+    mime_type: String,
+    cache_bytes: Vec<u8>,
+) -> Result<UploadResult, String> {
+    let existing = database::update_asset_category(&database_path, existing.id, &category)?;
+    let preview_missing = {
+        let _guard = cache_lock
+            .lock()
+            .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+        !preview::preview_exists(
+            existing.original_path.as_deref(),
+            existing.thumbnail_path.as_deref(),
+        )
+    };
+
+    if preview_missing {
+        let _ = cache_and_record_task(
+            cache_lock,
+            preview_cache_dir,
+            database_path.clone(),
+            existing.id,
+            sha256,
+            mime_type,
+            cache_bytes,
+            "local".into(),
+        )
+        .await;
+    }
+
+    let asset = database::find_by_id(&database_path, existing.id)?.unwrap_or(existing);
+    Ok(UploadResult {
+        asset,
+        deduplicated: true,
+    })
 }
 
 async fn cache_and_record_task(
