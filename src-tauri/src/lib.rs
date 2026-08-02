@@ -921,10 +921,7 @@ mod tests {
         TOKEN_MAX_IMAGE_BYTES,
     };
 
-    fn upload_input(
-        attachable_id: Option<i64>,
-        referer_url: Option<&str>,
-    ) -> UploadInput {
+    fn upload_input(attachable_id: Option<i64>, referer_url: Option<&str>) -> UploadInput {
         UploadInput {
             file_name: "test.png".into(),
             mime_type: "image/png".into(),
@@ -967,10 +964,7 @@ mod tests {
         )
         .is_err());
         assert!(validate_upload(
-            &upload_input(
-                Some(0),
-                Some("https://www.yuque.com/team/book/document"),
-            ),
+            &upload_input(Some(0), Some("https://www.yuque.com/team/book/document"),),
             true,
         )
         .is_err());
