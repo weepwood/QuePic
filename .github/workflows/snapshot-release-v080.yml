@@ -1,0 +1,71 @@
+name: Snapshot v0.8.0 release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/snapshot-release-v080.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout inspection branch
+        uses: actions/checkout@v4
+        with:
+          ref: inspect/v0.8.0-release
+          fetch-depth: 0
+
+      - name: Wait for release workflow and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: 7dadfe06025aba675b6bb6ebb13d90c208ec6230
+        run: |
+          set -u
+          run='{}'
+          release='{}'
+          for attempt in $(seq 1 45); do
+            runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}" 2>/dev/null || echo '{"workflow_runs":[]}')
+            run=$(printf '%s' "$runs" | jq -c '[.workflow_runs[] | select(.name == "Release")][0] // {}')
+            release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v0.8.0" 2>/dev/null || echo '{}')
+            status=$(printf '%s' "$run" | jq -r '.status // "missing"')
+            conclusion=$(printf '%s' "$run" | jq -r '.conclusion // ""')
+            assets=$(printf '%s' "$release" | jq -r '(.assets // []) | length')
+            echo "attempt=${attempt} status=${status} conclusion=${conclusion} assets=${assets}"
+            if [ "$status" = completed ] && [ "$conclusion" = success ] && [ "$assets" -ge 2 ]; then
+              break
+            fi
+            sleep 20
+          done
+          jq -n \
+            --arg checked_at "$(date -u +%FT%TZ)" \
+            --argjson workflow_run "$run" \
+            --argjson release "$release" \
+            '{checked_at: $checked_at, workflow_run: $workflow_run, release: $release}' \
+            > release-v0.8.0-status.json
+
+      - name: Commit snapshot to inspection branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add release-v0.8.0-status.json
+          git commit -m 'chore: 记录 v0.8.0 发布状态'
+          git push origin HEAD:inspect/v0.8.0-release
+
+      - name: Remove temporary workflow from main
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --quiet --branch main "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/quepic-main
+          cd /tmp/quepic-main
+          rm -f .github/workflows/snapshot-release-v080.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'chore: 清理 v0.8.0 发布快照检查器' || exit 0
+          git push origin HEAD:main
