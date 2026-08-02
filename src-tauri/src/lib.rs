@@ -183,15 +183,18 @@ async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, S
 #[tauri::command]
 fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let asset = database::find_by_id(&state.database_path, id)?;
-    let _guard = state
-        .cache_lock
-        .lock()
-        .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+    database::delete_asset(&state.database_path, id)?;
 
     if let Some(asset) = asset {
-        preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256)?;
+        if database::hash_reference_count(&state.database_path, &asset.sha256)? == 0 {
+            let _guard = state
+                .cache_lock
+                .lock()
+                .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
+            preview::remove_asset_cache(&state.preview_cache_dir, &asset.sha256)?;
+        }
     }
-    database::delete_asset(&state.database_path, id)
+    Ok(())
 }
 
 #[tauri::command]
@@ -303,7 +306,9 @@ async fn upload_image(
     let sha256 = format!("{:x}", hasher.finalize());
     let cache_bytes = input.bytes.clone();
 
-    if let Some(existing) = database::find_by_hash(&database_path, &sha256)? {
+    if let Some(existing) =
+        database::find_by_hash_for_account(&database_path, &account_name, &sha256)?
+    {
         let existing = database::update_asset_category(&database_path, existing.id, &category)?;
         let preview_missing = {
             let _guard = cache_lock
@@ -369,8 +374,15 @@ async fn upload_image(
     let (saved_asset, deduplicated) = match database::insert_asset(&database_path, &asset) {
         Ok(saved) => (saved, false),
         Err(error) => {
-            if let Some(existing) = database::find_by_hash(&database_path, &asset.sha256)? {
-                (database::update_asset_category(&database_path, existing.id, &asset.category)?, true)
+            if let Some(existing) = database::find_by_hash_for_account(
+                &database_path,
+                &asset.account_name,
+                &asset.sha256,
+            )? {
+                (
+                    database::update_asset_category(&database_path, existing.id, &asset.category)?,
+                    true,
+                )
             } else {
                 return Err(format!("图片已上传，但保存本地索引失败：{error}"));
             }
