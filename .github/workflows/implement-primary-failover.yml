@@ -1,0 +1,46 @@
+name: Implement primary account failover
+
+on:
+  push:
+    branches: [feat/primary-account-failover]
+    paths: [.github/workflows/implement-primary-failover.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/primary-account-failover
+          fetch-depth: 0
+      - name: Apply implementation
+        run: |
+          python scripts/patch-primary-failover.py
+          rm -f .github/workflows/implement-primary-failover.yml
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Use stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Validate frontend
+        run: |
+          npm install --silent
+          npm run build
+      - name: Validate backend
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: 支持主账号优先与从账号整点接力'
+          git push origin HEAD:feat/primary-account-failover
