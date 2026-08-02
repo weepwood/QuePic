@@ -27,78 +27,38 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import re
           from pathlib import Path
+
+          def sub_once(path: str, pattern: str, replacement: str) -> None:
+              target = Path(path)
+              text = target.read_text()
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"{path}: pattern matched {count} times: {pattern}")
+              target.write_text(updated)
 
           def replace_once(path: str, old: str, new: str) -> None:
               target = Path(path)
               text = target.read_text()
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f"{path}: expected one match, found {count}\n--- OLD ---\n{old}")
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old}")
               target.write_text(text.replace(old, new, 1))
 
-          replace_once(
+          sub_once(
               "src-tauri/src/lib.rs",
-              '''#[tauri::command]
-          fn list_assets(
-              state: State<'_, AppState>,
-              account_name: String,
-          ) -> Result<Vec<AssetRecord>, String> {
-              let account_name = normalize_account_name(&account_name)?;
-              Ok(database::list_assets(&state.database_path)?
-                  .into_iter()
-                  .filter(|asset| asset.account_name == account_name)
-                  .collect())
-          }
-          ''',
-              '''#[tauri::command]
-          fn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {
-              database::list_assets(&state.database_path)
-          }
-          ''',
+              r"#\[tauri::command\]\nfn list_assets\(.*?\n\}\n\n(?=#\[tauri::command\]\nfn update_asset_category)",
+              "#[tauri::command]\nfn list_assets(state: State<'_, AppState>) -> Result<Vec<AssetRecord>, String> {\n    database::list_assets(&state.database_path)\n}\n\n",
           )
-          replace_once(
+          sub_once(
               "src-tauri/src/lib.rs",
-              '''#[tauri::command]
-          fn cache_stats(
-              state: State<'_, AppState>,
-              account_name: String,
-          ) -> Result<CacheStats, String> {
-              let account_name = normalize_account_name(&account_name)?;
-              account_cache_stats(&state.database_path, &account_name)
-          }
-          ''',
-              '''#[tauri::command]
-          fn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {
-              shared_cache_stats(&state.database_path)
-          }
-          ''',
+              r"#\[tauri::command\]\nfn cache_stats\(.*?\n\}\n\n(?=#\[tauri::command\]\nfn upload_quota_status)",
+              "#[tauri::command]\nfn cache_stats(state: State<'_, AppState>) -> Result<CacheStats, String> {\n    shared_cache_stats(&state.database_path)\n}\n\n",
           )
-          replace_once(
+          sub_once(
               "src-tauri/src/lib.rs",
-              '''#[tauri::command]
-          async fn clear_preview_cache(
-              state: State<'_, AppState>,
-              account_name: String,
-          ) -> Result<CacheStats, String> {
-              let account_name = normalize_account_name(&account_name)?;
-              let database_path = state.database_path.clone();
-              let preview_cache_dir = state.preview_cache_dir.clone();
-              let cache_lock = state.cache_lock.clone();
-              drop(state);
-
-              tauri::async_runtime::spawn_blocking(move || {
-                  let _guard = cache_lock
-                      .lock()
-                      .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
-                  preview::clear_cache(&preview_cache_dir)?;
-                  database::clear_previews(&database_path)?;
-                  account_cache_stats(&database_path, &account_name)
-              })
-              .await
-              .map_err(|error| format!("清理图片缓存任务失败：{error}"))?
-          }
-          ''',
+              r"#\[tauri::command\]\nasync fn clear_preview_cache\(.*?\n\}\n\n(?=#\[tauri::command\]\nfn delete_asset)",
               '''#[tauri::command]
           async fn clear_preview_cache(state: State<'_, AppState>) -> Result<CacheStats, String> {
               let database_path = state.database_path.clone();
@@ -117,34 +77,12 @@ jobs:
               .await
               .map_err(|error| format!("清理图片缓存任务失败：{error}"))?
           }
+
           ''',
           )
-          replace_once(
+          sub_once(
               "src-tauri/src/lib.rs",
-              '''fn account_cache_stats(path: &Path, account_name: &str) -> Result<CacheStats, String> {
-              let assets = database::list_assets(path)?;
-              let mut asset_count = 0_i64;
-              let mut cached_count = 0_i64;
-              let mut cache_bytes = 0_i64;
-              let mut counted_hashes = HashSet::new();
-
-              for asset in assets.into_iter().filter(|asset| asset.account_name == account_name) {
-                  asset_count += 1;
-                  if asset.cache_status == "ready" {
-                      cached_count += 1;
-                      if counted_hashes.insert(asset.sha256) {
-                          cache_bytes = cache_bytes.saturating_add(asset.cache_bytes.unwrap_or(0));
-                      }
-                  }
-              }
-
-              Ok(CacheStats {
-                  asset_count,
-                  cached_count,
-                  cache_bytes,
-              })
-          }
-          ''',
+              r"fn account_cache_stats\(.*?\n\}\n\n(?=fn existing_local_path)",
               '''fn shared_cache_stats(path: &Path) -> Result<CacheStats, String> {
               let assets = database::list_assets(path)?;
               let mut asset_count = 0_i64;
@@ -168,227 +106,109 @@ jobs:
                   cache_bytes,
               })
           }
+
           ''',
           )
 
-          replace_once(
+          sub_once(
               "src/lib/tauri.ts",
-              '''export async function listAssets(accountName = activeAccountName()): Promise<AssetRecord[]> {
-            return invoke<AssetRecord[]>('list_assets', { accountName });
-          }
-          ''',
-              '''export async function listAssets(): Promise<AssetRecord[]> {
-            return invoke<AssetRecord[]>('list_assets');
-          }
-          ''',
+              r"export async function listAssets\(.*?\n\}",
+              "export async function listAssets(): Promise<AssetRecord[]> {\n  return invoke<AssetRecord[]>('list_assets');\n}",
           )
-          replace_once(
+          sub_once(
               "src/lib/tauri.ts",
-              '''export async function getCacheStats(accountName = activeAccountName()): Promise<CacheStats> {
-            return invoke<CacheStats>('cache_stats', { accountName });
-          }
-
-          export async function clearPreviewCache(accountName = activeAccountName()): Promise<CacheStats> {
-            return invoke<CacheStats>('clear_preview_cache', { accountName });
-          }
-          ''',
-              '''export async function getCacheStats(): Promise<CacheStats> {
-            return invoke<CacheStats>('cache_stats');
-          }
-
-          export async function clearPreviewCache(): Promise<CacheStats> {
-            return invoke<CacheStats>('clear_preview_cache');
-          }
-          ''',
+              r"export async function getCacheStats\(.*?\n\}\n\nexport async function clearPreviewCache\(.*?\n\}",
+              "export async function getCacheStats(): Promise<CacheStats> {\n  return invoke<CacheStats>('cache_stats');\n}\n\nexport async function clearPreviewCache(): Promise<CacheStats> {\n  return invoke<CacheStats>('clear_preview_cache');\n}",
           )
 
-          replace_once(
+          sub_once(
               "src/App.tsx",
-              '''  const refreshAssets = useCallback(async (targetAccount = activeAccountRef.current) => {
-            try {
-              const nextAssets = await listAssets(targetAccount);
-              if (activeAccountRef.current !== targetAccount) return;
-              setAssets(nextAssets);
-              setSelected((current) => current
-                ? nextAssets.find((asset) => asset.id === current.id) || null
-                : null);
-              setSelectedAssetIds((current) => new Set([...current].filter((id) => nextAssets.some((asset) => asset.id === id))));
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            }
-          }, [showToast]);
-
-          const refreshCacheStats = useCallback(async (targetAccount = activeAccountRef.current) => {
-            try {
-              const nextStats = await getCacheStats(targetAccount);
-              if (activeAccountRef.current === targetAccount) setCacheStats(nextStats);
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            }
-          }, [showToast]);
-          ''',
+              r"  const refreshAssets = useCallback\(async \(targetAccount = activeAccountRef\.current\) => \{.*?  \}, \[showToast\]\);\n\n  const refreshCacheStats = useCallback\(async \(targetAccount = activeAccountRef\.current\) => \{.*?  \}, \[showToast\]\);",
               '''  const refreshAssets = useCallback(async () => {
-            try {
-              const nextAssets = await listAssets();
-              setAssets(nextAssets);
-              setSelected((current) => current
-                ? nextAssets.find((asset) => asset.id === current.id) || null
-                : null);
-              setSelectedAssetIds((current) => new Set([...current].filter((id) => nextAssets.some((asset) => asset.id === id))));
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            }
-          }, [showToast]);
-
-          const refreshCacheStats = useCallback(async () => {
-            try {
-              setCacheStats(await getCacheStats());
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            }
-          }, [showToast]);
-          ''',
-          )
-          replace_once(
-              "src/App.tsx",
-              '''  const loadAccountContext = useCallback(async (targetAccount: string) => {
-            const requestId = ++contextRequestRef.current;
-            setAssets([]);
-            setCacheStats(EMPTY_CACHE_STATS);
-            setQuota(null);
-            setCredentialReady(false);
-            setTokenReady(false);
-            await Promise.all([
-              refreshAssets(targetAccount),
-              refreshCacheStats(targetAccount),
-              refreshAccountStatus(targetAccount),
-            ]);
-            if (requestId !== contextRequestRef.current) return;
-          }, [refreshAccountStatus, refreshAssets, refreshCacheStats]);
-          ''',
-              '''  const loadAccountContext = useCallback(async (targetAccount: string) => {
-            const requestId = ++contextRequestRef.current;
-            setQuota(null);
-            setCredentialReady(false);
-            setTokenReady(false);
-            await Promise.all([
-              refreshAssets(),
-              refreshCacheStats(),
-              refreshAccountStatus(targetAccount),
-            ]);
-            if (requestId !== contextRequestRef.current) return;
-          }, [refreshAccountStatus, refreshAssets, refreshCacheStats]);
-          ''',
-          )
-          replace_once(
-              "src/App.tsx",
-              '''      setSelected(null);
-              setSelectedAssetIds(new Set());
-              setCategoryFilter('全部');
-              setSearch('');
-              await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);
-              showToast('success', `已切换到账号“${nextAccount}”，上传与图片库上下文已同步。`);
-          ''',
-              '''      await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);
-              showToast('success', `已切换到账号“${nextAccount}”。上传身份已更新，共享图库保持不变。`);
-          ''',
-          )
-          replace_once(
-              "src/App.tsx",
-              '''  const handleClearPreviewCache = async () => {
-            setCacheBusy(true);
-            try {
-              setCacheStats(await clearPreviewCache(accountName));
-              await refreshAssets(accountName);
-              setCacheEpoch((value) => value + 1);
-              showToast('success', '当前账号的本地缓存已清理。进入视口的图片会按需重建缩略图。');
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            } finally {
-              setCacheBusy(false);
-            }
-          };
-          ''',
-              '''  const handleClearPreviewCache = async () => {
-            setCacheBusy(true);
-            try {
-              setCacheStats(await clearPreviewCache());
-              await refreshAssets();
-              setCacheEpoch((value) => value + 1);
-              showToast('success', '共享图库的本地缓存已清理。进入视口的图片会按需重建缩略图。');
-            } catch (error) {
-              showToast('error', normalizeError(error));
-            } finally {
-              setCacheBusy(false);
-            }
-          };
-          ''',
-          )
-          replace_once(
-              "src/App.tsx",
-              '''      await removeStoredQueueItem(id);
-              if (activeAccountRef.current === item.accountName) {
-                await Promise.all([
-                  refreshAssets(item.accountName),
-                  refreshCacheStats(item.accountName),
-                  refreshAccountStatus(item.accountName),
-                ]);
+              try {
+                const nextAssets = await listAssets();
+                setAssets(nextAssets);
+                setSelected((current) => current
+                  ? nextAssets.find((asset) => asset.id === current.id) || null
+                  : null);
+                setSelectedAssetIds((current) => new Set([...current].filter((id) => nextAssets.some((asset) => asset.id === id))));
+              } catch (error) {
+                showToast('error', normalizeError(error));
               }
-              await refreshProfiles();
-          ''',
+            }, [showToast]);
+
+            const refreshCacheStats = useCallback(async () => {
+              try {
+                setCacheStats(await getCacheStats());
+              } catch (error) {
+                showToast('error', normalizeError(error));
+              }
+            }, [showToast]);''',
+          )
+          sub_once(
+              "src/App.tsx",
+              r"  const loadAccountContext = useCallback\(async \(targetAccount: string\) => \{.*?  \}, \[refreshAccountStatus, refreshAssets, refreshCacheStats\]\);",
+              '''  const loadAccountContext = useCallback(async (targetAccount: string) => {
+              const requestId = ++contextRequestRef.current;
+              setQuota(null);
+              setCredentialReady(false);
+              setTokenReady(false);
+              await Promise.all([
+                refreshAssets(),
+                refreshCacheStats(),
+                refreshAccountStatus(targetAccount),
+              ]);
+              if (requestId !== contextRequestRef.current) return;
+            }, [refreshAccountStatus, refreshAssets, refreshCacheStats]);''',
+          )
+          sub_once(
+              "src/App.tsx",
+              r"      setSelected\(null\);\n      setSelectedAssetIds\(new Set\(\)\);\n      setCategoryFilter\('全部'\);\n      setSearch\(''\);\n      await Promise\.all\(\[loadAccountContext\(nextAccount\), refreshProfiles\(\)\]\);\n      showToast\('success', `已切换到账号“\$\{nextAccount\}”，上传与图片库上下文已同步。`\);",
+              "      await Promise.all([loadAccountContext(nextAccount), refreshProfiles()]);\n      showToast('success', `已切换到账号“${nextAccount}”。上传身份已更新，共享图库保持不变。`);",
+          )
+          sub_once(
+              "src/App.tsx",
+              r"  const handleClearPreviewCache = async \(\) => \{.*?\n  \};\n\n  const addFiles",
+              '''  const handleClearPreviewCache = async () => {
+              setCacheBusy(true);
+              try {
+                setCacheStats(await clearPreviewCache());
+                await refreshAssets();
+                setCacheEpoch((value) => value + 1);
+                showToast('success', '共享图库的本地缓存已清理。进入视口的图片会按需重建缩略图。');
+              } catch (error) {
+                showToast('error', normalizeError(error));
+              } finally {
+                setCacheBusy(false);
+              }
+            };
+
+            const addFiles''',
+          )
+          sub_once(
+              "src/App.tsx",
+              r"      await removeStoredQueueItem\(id\);\n      if \(activeAccountRef\.current === item\.accountName\) \{.*?\n      \}\n      await refreshProfiles\(\);",
               '''      await removeStoredQueueItem(id);
               await Promise.all([refreshAssets(), refreshCacheStats()]);
               if (activeAccountRef.current === item.accountName) {
                 await refreshAccountStatus(item.accountName);
               }
-              await refreshProfiles();
-          ''',
+              await refreshProfiles();''',
           )
+
           replace_once(
               "src/App.tsx",
               "    upload: { title: '上传图片', description: '持久化上传队列，支持按账号隔离和一小时后自动续传。' },\n    document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建或更新语雀文档。' },\n    library: { title: '图片库', description: '搜索、排序、批量分类和批量清理当前账号的图片内容。' },\n    settings: { title: '设置', description: '显式切换账号，管理语雀会话、Token、缓存与上传额度。' },",
               "    upload: { title: '上传图片', description: '选择上传账号，所有上传结果统一进入共享图库。' },\n    document: { title: '文件夹转文档', description: '按文件名顺序上传整个文件夹并创建或更新语雀文档。' },\n    library: { title: '共享图片库', description: '集中管理所有账号上传的图片、分类和本地缓存。' },\n    settings: { title: '设置', description: '账号仅管理上传身份、语雀会话、Token 与独立额度。' },",
           )
-          replace_once(
-              "src/App.tsx",
-              '<p>图片加入队列时绑定当前账号和分类；切换账号后不会串用凭据，也不会丢失待上传文件。</p>',
-              '<p>图片加入队列时绑定上传账号和分类；上传完成后统一进入共享图库，切换账号不会隐藏已有图片。</p>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<div><span>LOCAL FIRST ASSET INDEX · {accountName}</span><h2>图片内容管理</h2><p>使用分类、搜索、排序和批量操作整理当前账号的图片库。</p></div>',
-              '<div><span>SHARED LOCAL FIRST ASSET INDEX</span><h2>共享图片内容管理</h2><p>所有账号使用同一个图库；账号切换只改变上传身份，不改变这里的内容。</p></div>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)}</small>',
-              '<small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)} · 来源：{asset.account_name}</small>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<div><dt>分类</dt><dd>{selected.category}</dd></div>\n                        <div><dt>尺寸</dt>',
-              '<div><dt>分类</dt><dd>{selected.category}</dd></div>\n                        <div><dt>来源账号</dt><dd>{selected.account_name}</dd></div>\n                        <div><dt>尺寸</dt>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<div className="panel-heading"><div><span>ACCOUNT CONTEXT</span><h2>账号管理与切换</h2><p>切换时同步刷新凭据、额度、图片库和缓存，不再重载页面或丢失上传队列。</p></div><UserRound size={20} /></div>',
-              '<div className="panel-heading"><div><span>UPLOAD IDENTITIES</span><h2>上传账号管理</h2><p>账号分别保存凭据、Token 和上传额度；所有账号共同使用下方同一个图片库。</p></div><UserRound size={20} /></div>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<strong>{profile.account_name}</strong><small>{profile.asset_count} 张图片 · {profile.cached_count} 张缓存</small>',
-              '<strong>{profile.account_name}</strong><small>{profile.asset_count} 条来源记录 · {profile.cached_count} 张已缓存</small>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理当前账号缓存</button></div>',
-              '<div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理共享图库缓存</button></div>',
-          )
-          replace_once(
-              "src/App.tsx",
-              '<div className="guide"><ShieldCheck size={24} /><div><h3>受控访问策略</h3><ol><li>图片库、缓存统计和额度始终使用显式账号参数。</li><li>队列中的文件、分类和目标账号保存在本地 IndexedDB。</li><li>自动任务到期前会重新检查对应账号凭据和滚动额度。</li><li>额度不足时自动顺延到下一次可用时间。</li><li>OpenAPI Token 与 Cookie 均保存在系统密钥库。</li></ol></div></div>',
-              '<div className="guide"><ShieldCheck size={24} /><div><h3>共享图库策略</h3><ol><li>所有账号上传的图片统一进入同一个本地图库与分类体系。</li><li>每条记录保留来源账号，私有图片优先使用来源账号会话回源。</li><li>上传队列、Cookie、Token 和小时额度仍按账号隔离。</li><li>切换账号只改变新的上传身份，不影响图库筛选和当前选择。</li><li>共享缓存只保存一份，可在设置中统一清理和重建。</li></ol></div></div>',
-          )
+          replace_once("src/App.tsx", '<p>图片加入队列时绑定当前账号和分类；切换账号后不会串用凭据，也不会丢失待上传文件。</p>', '<p>图片加入队列时绑定上传账号和分类；上传完成后统一进入共享图库，切换账号不会隐藏已有图片。</p>')
+          replace_once("src/App.tsx", '<div><span>LOCAL FIRST ASSET INDEX · {accountName}</span><h2>图片内容管理</h2><p>使用分类、搜索、排序和批量操作整理当前账号的图片库。</p></div>', '<div><span>SHARED LOCAL FIRST ASSET INDEX</span><h2>共享图片内容管理</h2><p>所有账号使用同一个图库；账号切换只改变上传身份，不改变这里的内容。</p></div>')
+          replace_once("src/App.tsx", '<small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)}</small>', '<small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : asset.mime_type} · {formatBytes(asset.file_size)} · 来源：{asset.account_name}</small>')
+          replace_once("src/App.tsx", '<div><dt>分类</dt><dd>{selected.category}</dd></div>\n                        <div><dt>尺寸</dt>', '<div><dt>分类</dt><dd>{selected.category}</dd></div>\n                        <div><dt>来源账号</dt><dd>{selected.account_name}</dd></div>\n                        <div><dt>尺寸</dt>')
+          replace_once("src/App.tsx", '<div className="panel-heading"><div><span>ACCOUNT CONTEXT</span><h2>账号管理与切换</h2><p>切换时同步刷新凭据、额度、图片库和缓存，不再重载页面或丢失上传队列。</p></div><UserRound size={20} /></div>', '<div className="panel-heading"><div><span>UPLOAD IDENTITIES</span><h2>上传账号管理</h2><p>账号分别保存凭据、Token 和上传额度；所有账号共同使用下方同一个图片库。</p></div><UserRound size={20} /></div>')
+          replace_once("src/App.tsx", '<strong>{profile.account_name}</strong><small>{profile.asset_count} 张图片 · {profile.cached_count} 张缓存</small>', '<strong>{profile.account_name}</strong><small>{profile.asset_count} 条来源记录 · {profile.cached_count} 张已缓存</small>')
+          replace_once("src/App.tsx", '<div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理当前账号缓存</button></div>', '<div className="actions"><button className="button danger" disabled={cacheBusy || cacheStats.cached_count === 0} onClick={() => void handleClearPreviewCache()}>{cacheBusy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}清理共享图库缓存</button></div>')
+          replace_once("src/App.tsx", '<div className="guide"><ShieldCheck size={24} /><div><h3>受控访问策略</h3><ol><li>图片库、缓存统计和额度始终使用显式账号参数。</li><li>队列中的文件、分类和目标账号保存在本地 IndexedDB。</li><li>自动任务到期前会重新检查对应账号凭据和滚动额度。</li><li>额度不足时自动顺延到下一次可用时间。</li><li>OpenAPI Token 与 Cookie 均保存在系统密钥库。</li></ol></div></div>', '<div className="guide"><ShieldCheck size={24} /><div><h3>共享图库策略</h3><ol><li>所有账号上传的图片统一进入同一个本地图库与分类体系。</li><li>每条记录保留来源账号，私有图片优先使用来源账号会话回源。</li><li>上传队列、Cookie、Token 和小时额度仍按账号隔离。</li><li>切换账号只改变新的上传身份，不影响图库筛选和当前选择。</li><li>共享缓存只保存一份，可在设置中统一清理和重建。</li></ol></div></div>')
           PY
 
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
