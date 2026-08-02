@@ -42,6 +42,7 @@ import { AssetPreview } from './components/AssetPreview';
 import { BatchDocumentUploader } from './components/BatchDocumentUploader';
 import { YuqueDocumentManager } from './components/YuqueDocumentManager';
 import { OriginalImageViewer } from './components/OriginalImageViewer';
+import { isMaintenanceActive } from './lib/maintenance';
 import {
   appendImagesToDailyDocument,
   ensureDailyImageDocument,
@@ -1006,13 +1007,14 @@ export default function App() {
   };
 
   const runDueUploads = useCallback(async () => {
-    if (autoUploadRunningRef.current) return;
+    if (isMaintenanceActive() || autoUploadRunningRef.current) return;
     const due = queueRef.current.filter((item) => item.status === 'scheduled' && (item.scheduledAt || 0) <= Date.now());
     if (due.length === 0) return;
     autoUploadRunningRef.current = true;
     try {
       await processUploadBatch(due, false);
     } catch (error) {
+      if (isMaintenanceActive()) return;
       const retryAt = Date.now() + 5 * 60 * 1000;
       try {
         await rescheduleItems(due, retryAt, '自动检查失败，五分钟后重试');
