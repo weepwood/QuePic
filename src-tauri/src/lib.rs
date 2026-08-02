@@ -849,10 +849,21 @@ fn validate_upload(input: &UploadInput, token_configured: bool) -> Result<(), St
     if !ALLOWED_MIME_TYPES.contains(&input.mime_type.as_str()) {
         return Err(format!("不支持的图片格式：{}", input.mime_type));
     }
-    if input.attachable_id <= 0 {
-        return Err("尚未配置有效的账号上传上下文文档。".into());
+    match (input.attachable_id, input.referer_url.as_deref()) {
+        (Some(attachable_id), Some(referer_url)) => {
+            if attachable_id <= 0 {
+                return Err("上传上下文文档 ID 无效，请重新验证文档 URL。".into());
+            }
+            yuque::normalize_document_url(referer_url)?;
+        }
+        (Some(_), None) => {
+            return Err("文档关联上传缺少 Referer，请重新准备主账号上传上下文。".into());
+        }
+        (None, Some(_)) => {
+            return Err("无文档上传不应携带文档 Referer。".into());
+        }
+        (None, None) => {}
     }
-    yuque::normalize_document_url(&input.referer_url)?;
     Ok(())
 }
 
@@ -905,12 +916,64 @@ fn sanitize_file_name(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{maximum_upload_bytes, NO_TOKEN_MAX_IMAGE_BYTES, TOKEN_MAX_IMAGE_BYTES};
+    use super::{
+        maximum_upload_bytes, validate_upload, UploadInput, NO_TOKEN_MAX_IMAGE_BYTES,
+        TOKEN_MAX_IMAGE_BYTES,
+    };
+
+    fn upload_input(
+        attachable_id: Option<i64>,
+        referer_url: Option<&str>,
+    ) -> UploadInput {
+        UploadInput {
+            file_name: "test.png".into(),
+            mime_type: "image/png".into(),
+            bytes: vec![1],
+            width: Some(1),
+            height: Some(1),
+            account_name: "test".into(),
+            category: "未分类".into(),
+            tags: Vec::new(),
+            attachable_id,
+            referer_url: referer_url.map(str::to_string),
+        }
+    }
 
     #[test]
     fn applies_token_tier_upload_limits() {
         assert_eq!(maximum_upload_bytes(false), NO_TOKEN_MAX_IMAGE_BYTES);
         assert_eq!(maximum_upload_bytes(true), TOKEN_MAX_IMAGE_BYTES);
+    }
+
+    #[test]
+    fn accepts_contextless_child_upload() {
+        validate_upload(&upload_input(None, None), false).unwrap();
+    }
+
+    #[test]
+    fn validates_complete_document_upload_context() {
+        validate_upload(
+            &upload_input(
+                Some(123456),
+                Some("https://www.yuque.com/team/book/document"),
+            ),
+            true,
+        )
+        .unwrap();
+        assert!(validate_upload(&upload_input(Some(123456), None), true).is_err());
+        assert!(validate_upload(
+            &upload_input(None, Some("https://www.yuque.com/team/book/document")),
+            false,
+        )
+        .is_err());
+        assert!(validate_upload(
+            &upload_input(
+                Some(0),
+                Some("https://www.yuque.com/team/book/document"),
+            ),
+            true,
+        )
+        .is_err());
     }
 }
 
