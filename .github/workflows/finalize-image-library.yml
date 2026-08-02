@@ -1,0 +1,73 @@
+name: Finalize image library
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.head_ref == 'feat/image-library-overhaul'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Apply final review fixes
+        run: python3 .github/scripts/finalize_image_library.py
+
+      - name: Format changed Rust sources
+        run: |
+          rustfmt --edition 2021 \
+            src-tauri/src/database.rs \
+            src-tauri/src/preview.rs \
+            src-tauri/src/yuque_openapi.rs
+
+      - name: Verify React frontend
+        run: |
+          npm install --silent
+          npm run build
+
+      - name: Generate temporary Tauri icons
+        run: npm run icons
+
+      - name: Verify Rust backend
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Commit reviewed implementation
+        run: |
+          rm -f src-tauri/Cargo.lock package-lock.json
+          git restore --source=origin/main --worktree --staged src-tauri/icons src-tauri/gen || true
+          rm .github/scripts/finalize_image_library.py
+          rm .github/workflows/finalize-image-library.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: 完成图库重构最终审查"
+          git push origin HEAD:feat/image-library-overhaul
