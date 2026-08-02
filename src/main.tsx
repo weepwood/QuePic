@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { AccountBackupManager } from './components/AccountBackupManager';
+import { bootstrapAppSettings } from './lib/appSettings';
 import './styles.css';
 import './preview.css';
 import './yuque-theme.css';
@@ -16,9 +17,19 @@ import './original-viewer.css';
 // 新图库布局必须最后加载，以覆盖旧网格和详情预览规则。
 import './library-overhaul.css';
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-    <AccountBackupManager />
-  </StrictMode>,
-);
+async function startApplication() {
+  try {
+    await bootstrapAppSettings();
+  } catch (error) {
+    console.error('无法加载 QuePic 应用设置，将使用当前本地兼容配置。', error);
+  }
+
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+      <AccountBackupManager />
+    </StrictMode>,
+  );
+}
+
+void startApplication();
