@@ -11,6 +11,8 @@ import type {
   UploadQuotaStatus,
   UploadResult,
   YuqueDocumentResult,
+  YuqueDocumentSummary,
+  YuqueRepositorySummary,
 } from '../types';
 
 const UPLOAD_CONTEXT_PREFIX = 'quepic-upload-context:';
@@ -56,6 +58,40 @@ export async function resolveUploadContext(
     input: {
       account_name: accountName,
       document_url: documentUrl,
+    },
+  });
+}
+
+export async function listYuqueRepositories(accountName: string): Promise<YuqueRepositorySummary[]> {
+  return invoke<YuqueRepositorySummary[]>('list_yuque_repositories', { accountName });
+}
+
+export async function ensureQuePicRepository(accountName: string): Promise<YuqueRepositorySummary> {
+  return invoke<YuqueRepositorySummary>('ensure_quepic_repository', { accountName });
+}
+
+export async function listYuqueDocuments(
+  accountName: string,
+  namespace: string,
+): Promise<YuqueDocumentSummary[]> {
+  return invoke<YuqueDocumentSummary[]>('list_yuque_documents', {
+    input: {
+      account_name: accountName,
+      namespace,
+    },
+  });
+}
+
+export async function deleteYuqueDocument(
+  accountName: string,
+  repositoryId: number,
+  documentId: number,
+): Promise<void> {
+  return invoke('delete_yuque_document', {
+    input: {
+      account_name: accountName,
+      repository_id: repositoryId,
+      document_id: documentId,
     },
   });
 }
