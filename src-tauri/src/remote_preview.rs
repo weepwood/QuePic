@@ -8,7 +8,7 @@ const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const MINIMUM_REQUEST_INTERVAL: Duration = Duration::from_millis(750);
 const MAX_CONCURRENT_REQUESTS: usize = 2;
 const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &["yuque.com", "nlark.com"];
-const USER_AGENT: &str = "QuePic/0.3 remote-preview";
+const USER_AGENT: &str = "QuePic/0.4 remote-preview";
 
 #[derive(Debug)]
 pub struct DownloadedImage {
