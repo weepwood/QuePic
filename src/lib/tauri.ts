@@ -229,10 +229,15 @@ export async function uploadImage(
   tags: string[],
   contextAccountName = accountName,
 ): Promise<UploadResult> {
-  const context = getStoredUploadContext(contextAccountName);
-  if (!context) {
+  const normalizedAccountName = accountName.trim();
+  const normalizedContextAccountName = contextAccountName.trim();
+  const usesDocumentContext = normalizedAccountName === normalizedContextAccountName;
+  const context = usesDocumentContext
+    ? getStoredUploadContext(normalizedContextAccountName)
+    : null;
+  if (usesDocumentContext && !context) {
     throw new Error(
-      `主账号“${contextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`,
+      `主账号“${normalizedContextAccountName}”尚未准备上传上下文；请检查主账号 Token 和文档配置。`,
     );
   }
 
@@ -244,11 +249,11 @@ export async function uploadImage(
       bytes,
       width,
       height,
-      account_name: accountName,
+      account_name: normalizedAccountName,
       category,
       tags,
-      attachable_id: context.attachable_id,
-      referer_url: context.document_url,
+      attachable_id: context?.attachable_id ?? null,
+      referer_url: context?.document_url ?? null,
     },
   });
 }
