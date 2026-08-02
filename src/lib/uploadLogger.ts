@@ -58,8 +58,8 @@ const AUTHORIZATION_VALUE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 
 function sanitizeText(value: string): string {
   return value
-    .replace(SECRET_ASSIGNMENT, '$1[REDACTED]')
-    .replace(AUTHORIZATION_VALUE, '$1 [REDACTED]');
+    .replace(AUTHORIZATION_VALUE, '$1 [REDACTED]')
+    .replace(SECRET_ASSIGNMENT, '$1[REDACTED]');
 }
 
 function sanitizeUrl(value: string): string {
