@@ -52,6 +52,7 @@ interface ImportResult {
 }
 
 type BusyAction = 'accounts' | 'login' | 'export' | 'import' | null;
+type ImportMode = 'settings' | 'library' | 'full';
 
 const DEFAULT_ACCOUNT = 'default';
 
@@ -95,6 +96,10 @@ export function AccountBackupManager() {
       setBusy(null);
     }
   }, [activeAccount]);
+
+  useEffect(() => {
+    void refreshAccounts();
+  }, [refreshAccounts]);
 
   useEffect(() => {
     if (open) void refreshAccounts();
@@ -202,24 +207,32 @@ export function AccountBackupManager() {
     }
   };
 
-  const importBackup = async (fullRestore: boolean) => {
-    if (fullRestore && !window.confirm('完整恢复会替换当前图片索引和本地缓存。系统密钥库中的 Cookie 与 Token 不会被覆盖。继续吗？')) {
-      return;
-    }
+  const importBackup = async (mode: ImportMode) => {
+    const restoreLibrary = mode !== 'settings';
+    const restoreCache = mode === 'full';
+    const confirmation = mode === 'full'
+      ? '完整恢复会替换当前图片索引和本地缓存。系统密钥库中的 Cookie 与 Token 不会被覆盖。继续吗？'
+      : mode === 'library'
+        ? '恢复图片索引会替换当前图片记录，并清理当前缩略图缓存；导入后图片会按需重新回源。继续吗？'
+        : null;
+    if (confirmation && !window.confirm(confirmation)) return;
+
     setBusy('import');
     setMessage(null);
     try {
       const result = await invoke<ImportResult>('import_backup', {
-        restoreLibrary: fullRestore,
-        restoreCache: fullRestore,
+        restoreLibrary,
+        restoreCache,
       });
       if (result.cancelled || !result.settings) return;
       applyPortableSettings(result.settings);
       setMessage({
         type: 'success',
-        text: fullRestore
+        text: mode === 'full'
           ? `完整备份已恢复，共导入 ${result.restored_cache_files} 个缓存文件。应用将重新加载。`
-          : '设置和账号列表已导入，应用将重新加载。',
+          : mode === 'library'
+            ? '设置与图片索引已恢复，缩略图将按需重新建立。应用将重新加载。'
+            : '设置和账号列表已导入，应用将重新加载。',
       });
       window.setTimeout(() => window.location.reload(), 900);
     } catch (error) {
@@ -289,12 +302,13 @@ export function AccountBackupManager() {
               </section>
 
               <section className="backup-section import-section">
-                <div className="section-heading"><div><Upload size={20} /><span><strong>导入备份</strong><small>可只导入设置，也可完整替换本地图片库</small></span></div></div>
+                <div className="section-heading"><div><Upload size={20} /><span><strong>导入备份</strong><small>按备份内容选择恢复范围</small></span></div></div>
                 <div className="import-actions">
-                  <button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void importBackup(false)}>只导入设置</button>
-                  <button className="button danger" type="button" disabled={Boolean(busy)} onClick={() => void importBackup(true)}>完整恢复索引与缓存</button>
+                  <button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void importBackup('settings')}>只导入设置</button>
+                  <button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void importBackup('library')}>恢复设置与图片索引</button>
+                  <button className="button danger" type="button" disabled={Boolean(busy)} onClick={() => void importBackup('full')}>完整恢复索引与缓存</button>
                 </div>
-                <p>备份文件不包含 Cookie 或 OpenAPI Token。迁移到新设备后，需要重新登录语雀并重新保存 Token。</p>
+                <p>索引恢复会替换当前图片记录。备份文件不包含 Cookie 或 OpenAPI Token，迁移到新设备后需要重新登录并保存 Token。</p>
               </section>
 
               {busy && <div className="account-backup-progress"><LoaderCircle className="spin" size={18} /><span>{busy === 'export' ? '正在生成备份包…' : busy === 'import' ? '正在校验并恢复备份…' : busy === 'login' ? '正在处理登录会话…' : '正在读取账号状态…'}</span></div>}
