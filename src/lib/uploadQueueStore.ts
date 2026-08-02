@@ -23,20 +23,49 @@ function openDatabase(): Promise<IDBDatabase> {
 
 function runTransaction<T>(
   mode: IDBTransactionMode,
-  operation: (store: IDBObjectStore, resolve: (value: T) => void, reject: (reason?: unknown) => void) => void,
+  operation: (
+    store: IDBObjectStore,
+    setResult: (value: T) => void,
+    fail: (reason?: unknown) => void,
+  ) => void,
 ): Promise<T> {
   return openDatabase().then((database) => new Promise<T>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, mode);
     const store = transaction.objectStore(STORE_NAME);
-    operation(store, resolve, reject);
-    transaction.oncomplete = () => database.close();
+    let result: T;
+    let resultReady = false;
+    let settled = false;
+
+    const fail = (reason?: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(reason || new Error('上传队列数据库操作失败。'));
+    };
+
+    const setResult = (value: T) => {
+      result = value;
+      resultReady = true;
+    };
+
+    operation(store, setResult, fail);
+
+    transaction.oncomplete = () => {
+      database.close();
+      if (settled) return;
+      settled = true;
+      if (!resultReady) {
+        reject(new Error('上传队列数据库事务未返回结果。'));
+        return;
+      }
+      resolve(result);
+    };
     transaction.onerror = () => {
       database.close();
-      reject(transaction.error || new Error('上传队列数据库操作失败。'));
+      fail(transaction.error || new Error('上传队列数据库操作失败。'));
     };
     transaction.onabort = () => {
       database.close();
-      reject(transaction.error || new Error('上传队列数据库操作已中止。'));
+      fail(transaction.error || new Error('上传队列数据库操作已中止。'));
     };
   }));
 }
@@ -58,44 +87,44 @@ export function toStoredQueueItem(item: UploadQueueItem): StoredUploadQueueItem 
 }
 
 export async function listStoredQueueItems(): Promise<StoredUploadQueueItem[]> {
-  return runTransaction<StoredUploadQueueItem[]>('readonly', (store, resolve, reject) => {
+  return runTransaction<StoredUploadQueueItem[]>('readonly', (store, setResult, fail) => {
     const request = store.getAll();
     request.onsuccess = () => {
       const items = (request.result as StoredUploadQueueItem[])
         .sort((left, right) => right.createdAt - left.createdAt);
-      resolve(items);
+      setResult(items);
     };
-    request.onerror = () => reject(request.error);
+    request.onerror = () => fail(request.error);
   });
 }
 
 export async function saveStoredQueueItem(item: StoredUploadQueueItem): Promise<void> {
-  return runTransaction<void>('readwrite', (store, resolve, reject) => {
+  return runTransaction<void>('readwrite', (store, setResult, fail) => {
     const request = store.put(item);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => setResult(undefined);
+    request.onerror = () => fail(request.error);
   });
 }
 
 export async function saveStoredQueueItems(items: StoredUploadQueueItem[]): Promise<void> {
   if (items.length === 0) return;
-  return runTransaction<void>('readwrite', (store, resolve, reject) => {
+  return runTransaction<void>('readwrite', (store, setResult, fail) => {
     let remaining = items.length;
     for (const item of items) {
       const request = store.put(item);
-      request.onerror = () => reject(request.error);
+      request.onerror = () => fail(request.error);
       request.onsuccess = () => {
         remaining -= 1;
-        if (remaining === 0) resolve();
+        if (remaining === 0) setResult(undefined);
       };
     }
   });
 }
 
 export async function removeStoredQueueItem(id: string): Promise<void> {
-  return runTransaction<void>('readwrite', (store, resolve, reject) => {
+  return runTransaction<void>('readwrite', (store, setResult, fail) => {
     const request = store.delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => setResult(undefined);
+    request.onerror = () => fail(request.error);
   });
 }
