@@ -66,7 +66,7 @@ struct YuqueLocation {
 }
 
 #[tauri::command]
-pub async fn save_yuque_document(
+pub async fn create_yuque_document(
     input: SaveYuqueDocumentInput,
 ) -> Result<YuqueDocumentResult, String> {
     let account_name = validate_account_name(&input.account_name)?;
