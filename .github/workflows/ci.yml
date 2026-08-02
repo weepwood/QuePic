@@ -38,7 +38,25 @@ jobs:
                   break
               script_lines.append(line[10:] if line.startswith('          ') else '')
           script = '\n'.join(script_lines) + '\n'
-          script = script.replace('if count != 1:', 'if count < 1:')
+          script = script.replace('from pathlib import Path\n', 'from pathlib import Path\nimport re\n', 1)
+          script = script.replace(
+              '''        count = text.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path}: expected one match, found {count}\\n--- OLD ---\\n{old[:500]}')
+                  text = text.replace(old, new, 1)
+          ''',
+              '''        if old in text:
+                      text = text.replace(old, new, 1)
+                      continue
+                  lines = [line.strip() for line in old.splitlines() if line.strip()]
+                  pattern = r'\\s*'.join(re.escape(line) for line in lines)
+                  matches = list(re.finditer(pattern, text, flags=re.MULTILINE))
+                  if not matches:
+                      raise SystemExit(f'{path}: whitespace-insensitive block not found\\n--- OLD ---\\n{old[:500]}')
+                  match = matches[0]
+                  text = text[:match.start()] + new + text[match.end():]
+          ''',
+          )
           script = script.replace(
               'rm .github/workflows/apply-upload-context.yml\n          git config',
               'rm .github/workflows/apply-upload-context.yml .github/upload-context-trigger\n'
