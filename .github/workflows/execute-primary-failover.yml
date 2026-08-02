@@ -98,3 +98,5 @@ jobs:
           git add -A
           git commit -m 'chore: 清理主账号接力执行器' || exit 0
           git push origin HEAD:main
+
+# Existing-workflow trigger: 2026-08-02
