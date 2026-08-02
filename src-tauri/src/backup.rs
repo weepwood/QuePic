@@ -63,7 +63,10 @@ pub async fn export_backup(
     include_cache: bool,
 ) -> Result<BackupResult, String> {
     let include_library = include_library || include_cache;
-    let default_name = format!("QuePic-backup-{}.quepic-backup", Utc::now().format("%Y%m%d-%H%M%S"));
+    let default_name = format!(
+        "QuePic-backup-{}.quepic-backup",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    );
     let selected = app
         .dialog()
         .file()
@@ -235,7 +238,8 @@ fn restore_backup_archive(
     restore_cache: bool,
 ) -> Result<ImportResult, String> {
     let file = File::open(source).map_err(|error| format!("无法打开备份文件：{error}"))?;
-    let mut archive = ZipArchive::new(file).map_err(|error| format!("备份文件格式无效：{error}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| format!("备份文件格式无效：{error}"))?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err("备份文件包含过多条目，已拒绝导入。".into());
     }
@@ -251,7 +255,9 @@ fn restore_backup_archive(
         return Err("该备份声称包含凭据，QuePic 已拒绝导入。".into());
     }
     let settings: PortableSettings = read_json(&mut archive, "settings.json")?;
-    accounts::import_account_names(database_path, &settings.account_names)?;
+    if !restore_library {
+        accounts::import_account_names(database_path, &settings.account_names)?;
+    }
 
     let temporary_root = temporary_directory("quepic-import")?;
     let imported_database = temporary_root.join("library.sqlite");
@@ -275,7 +281,8 @@ fn restore_backup_archive(
             if !manifest.includes_cache {
                 return Err("该备份不包含图片缓存。".into());
             }
-            cache_files = extract_cache_entries(&mut archive, &imported_cache, &mut total_bytes)?;
+            cache_files =
+                extract_cache_entries(&mut archive, &imported_cache, &mut total_bytes)?;
         }
         Ok::<_, String>(())
     })();
@@ -284,23 +291,17 @@ fn restore_backup_archive(
         return Err(error);
     }
 
-    let restore_result = (|| {
-        if restore_library {
-            validate_database(&imported_database)?;
-            replace_database(database_path, &imported_database)?;
-            database::initialize(database_path)?;
-            accounts::initialize(database_path)?;
-            accounts::import_account_names(database_path, &settings.account_names)?;
-            database::clear_previews(database_path)?;
-
-            preview::clear_cache(preview_cache_dir)?;
-            if restore_cache {
-                copy_directory_contents(&imported_cache, preview_cache_dir)?;
-                reindex_cache(database_path, preview_cache_dir)?;
-            }
-        }
-        Ok::<_, String>(())
-    })();
+    let restore_result = if restore_library {
+        restore_library_transaction(
+            database_path,
+            &imported_database,
+            preview_cache_dir,
+            restore_cache.then_some(imported_cache.as_path()),
+            &settings.account_names,
+        )
+    } else {
+        Ok(())
+    };
 
     let _ = fs::remove_dir_all(&temporary_root);
     restore_result?;
@@ -309,7 +310,11 @@ fn restore_backup_archive(
         settings: Some(settings),
         restored_library: restore_library,
         restored_cache: restore_library && restore_cache,
-        restored_cache_files: if restore_library && restore_cache { cache_files } else { 0 },
+        restored_cache_files: if restore_library && restore_cache {
+            cache_files
+        } else {
+            0
+        },
     })
 }
 
@@ -317,7 +322,8 @@ fn snapshot_database(source: &Path, target: &Path) -> Result<(), String> {
     if target.exists() {
         fs::remove_file(target).map_err(|error| format!("无法清理旧数据库快照：{error}"))?;
     }
-    let connection = Connection::open(source).map_err(|error| format!("无法打开本地数据库：{error}"))?;
+    let connection =
+        Connection::open(source).map_err(|error| format!("无法打开本地数据库：{error}"))?;
     connection
         .execute_batch("PRAGMA wal_checkpoint(FULL);")
         .map_err(|error| format!("无法同步本地数据库：{error}"))?;
@@ -327,31 +333,143 @@ fn snapshot_database(source: &Path, target: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法创建数据库快照：{error}"))
 }
 
-fn replace_database(target: &Path, imported: &Path) -> Result<(), String> {
-    let staged = temporary_sibling(target, "restore");
-    fs::copy(imported, &staged).map_err(|error| format!("无法暂存导入数据库：{error}"))?;
-    validate_database(&staged)?;
+fn restore_library_transaction(
+    database_path: &Path,
+    imported_database: &Path,
+    preview_cache_dir: &Path,
+    imported_cache: Option<&Path>,
+    account_names: &[String],
+) -> Result<(), String> {
+    validate_database(imported_database)?;
 
-    remove_sqlite_sidecars(target);
-    let backup = temporary_sibling(target, "before-import");
-    let had_original = target.exists();
-    if had_original {
-        fs::rename(target, &backup).map_err(|error| format!("无法备份当前数据库：{error}"))?;
-    }
-    if let Err(error) = fs::rename(&staged, target) {
-        if had_original {
-            let _ = fs::rename(&backup, target);
+    let staged_database = temporary_sibling(database_path, "restore");
+    let staged_cache = temporary_sibling(preview_cache_dir, "restore");
+    let database_backup = temporary_sibling(database_path, "before-import");
+    let cache_backup = temporary_sibling(preview_cache_dir, "before-import");
+
+    remove_path(&staged_database);
+    remove_path(&staged_cache);
+    remove_path(&database_backup);
+    remove_path(&cache_backup);
+
+    let preparation_result = (|| {
+        fs::copy(imported_database, &staged_database)
+            .map_err(|error| format!("无法暂存导入数据库：{error}"))?;
+        validate_database(&staged_database)?;
+        fs::create_dir_all(&staged_cache)
+            .map_err(|error| format!("无法暂存导入缓存：{error}"))?;
+        if let Some(imported_cache) = imported_cache {
+            copy_directory_contents(imported_cache, &staged_cache)?;
         }
-        return Err(format!("无法替换当前数据库：{error}"));
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = preparation_result {
+        remove_path(&staged_database);
+        remove_path(&staged_cache);
+        return Err(error);
     }
-    if had_original {
-        let _ = fs::remove_file(backup);
+
+    remove_sqlite_sidecars(database_path);
+    let had_database = database_path.exists();
+    let had_cache = preview_cache_dir.exists();
+
+    if had_database {
+        fs::rename(database_path, &database_backup)
+            .map_err(|error| format!("无法备份当前数据库：{error}"))?;
     }
+    if had_cache {
+        if let Err(error) = fs::rename(preview_cache_dir, &cache_backup) {
+            if had_database {
+                let _ = fs::rename(&database_backup, database_path);
+            }
+            remove_path(&staged_database);
+            remove_path(&staged_cache);
+            return Err(format!("无法备份当前图片缓存：{error}"));
+        }
+    }
+
+    let commit_result = (|| {
+        fs::rename(&staged_database, database_path)
+            .map_err(|error| format!("无法替换当前数据库：{error}"))?;
+        fs::rename(&staged_cache, preview_cache_dir)
+            .map_err(|error| format!("无法替换当前图片缓存：{error}"))?;
+
+        database::initialize(database_path)?;
+        accounts::initialize(database_path)?;
+        accounts::import_account_names(database_path, account_names)?;
+        database::clear_previews(database_path)?;
+        if imported_cache.is_some() {
+            reindex_cache(database_path, preview_cache_dir)?;
+        }
+        Ok::<_, String>(())
+    })();
+
+    if let Err(error) = commit_result {
+        let rollback_errors = rollback_restore(
+            database_path,
+            &database_backup,
+            had_database,
+            preview_cache_dir,
+            &cache_backup,
+            had_cache,
+        );
+        remove_path(&staged_database);
+        remove_path(&staged_cache);
+        if rollback_errors.is_empty() {
+            return Err(format!("恢复备份失败，已恢复原数据：{error}"));
+        }
+        return Err(format!(
+            "恢复备份失败：{error}；自动回滚不完整：{}",
+            rollback_errors.join("；")
+        ));
+    }
+
+    remove_path(&database_backup);
+    remove_path(&cache_backup);
     Ok(())
 }
 
+fn rollback_restore(
+    database_path: &Path,
+    database_backup: &Path,
+    had_database: bool,
+    preview_cache_dir: &Path,
+    cache_backup: &Path,
+    had_cache: bool,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    remove_sqlite_sidecars(database_path);
+
+    if database_path.exists() {
+        if let Err(error) = fs::remove_file(database_path) {
+            errors.push(format!("无法移除失败的导入数据库：{error}"));
+        }
+    }
+    if had_database {
+        if let Err(error) = fs::rename(database_backup, database_path) {
+            errors.push(format!("无法恢复原数据库：{error}"));
+        }
+    }
+
+    if preview_cache_dir.exists() {
+        if let Err(error) = fs::remove_dir_all(preview_cache_dir) {
+            errors.push(format!("无法移除失败的导入缓存：{error}"));
+        }
+    }
+    if had_cache {
+        if let Err(error) = fs::rename(cache_backup, preview_cache_dir) {
+            errors.push(format!("无法恢复原图片缓存：{error}"));
+        }
+    } else if let Err(error) = fs::create_dir_all(preview_cache_dir) {
+        errors.push(format!("无法重新创建图片缓存目录：{error}"));
+    }
+
+    errors
+}
+
 fn validate_database(path: &Path) -> Result<(), String> {
-    let connection = Connection::open(path).map_err(|error| format!("无法打开导入数据库：{error}"))?;
+    let connection =
+        Connection::open(path).map_err(|error| format!("无法打开导入数据库：{error}"))?;
     let integrity: String = connection
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|error| format!("无法检查导入数据库：{error}"))?;
@@ -377,7 +495,9 @@ fn reindex_cache(database_path: &Path, cache_root: &Path) -> Result<(), String> 
         .prepare("SELECT id, sha256 FROM assets")
         .map_err(|error| error.to_string())?;
     let assets = statement
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
@@ -392,18 +512,23 @@ fn reindex_cache(database_path: &Path, cache_root: &Path) -> Result<(), String> 
         let Some(original_path) = find_cache_file(&directory, "preview.") else {
             continue;
         };
-        let thumbnail_path = find_cache_file(&directory, "thumbnail.")
-            .unwrap_or_else(|| original_path.clone());
-        let original_bytes = fs::metadata(&original_path).map(|value| value.len()).unwrap_or(0);
+        let thumbnail_path =
+            find_cache_file(&directory, "thumbnail.").unwrap_or_else(|| original_path.clone());
+        let original_bytes = fs::metadata(&original_path)
+            .map(|value| value.len())
+            .unwrap_or(0);
         let thumbnail_bytes = if thumbnail_path == original_path {
             0
         } else {
-            fs::metadata(&thumbnail_path).map(|value| value.len()).unwrap_or(0)
+            fs::metadata(&thumbnail_path)
+                .map(|value| value.len())
+                .unwrap_or(0)
         };
         let cached = preview::CachedPreview {
             original_path: original_path.to_string_lossy().into_owned(),
             thumbnail_path: thumbnail_path.to_string_lossy().into_owned(),
-            cache_bytes: i64::try_from(original_bytes.saturating_add(thumbnail_bytes)).unwrap_or(i64::MAX),
+            cache_bytes: i64::try_from(original_bytes.saturating_add(thumbnail_bytes))
+                .unwrap_or(i64::MAX),
             cached_at: Utc::now().to_rfc3339(),
         };
         database::upsert_cached_preview(database_path, asset_id, &cached, "imported_backup")?;
@@ -460,7 +585,9 @@ fn add_directory<W: Write + Seek>(
 ) -> Result<(), String> {
     let mut directories = vec![source_root.to_path_buf()];
     while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(&directory).map_err(|error| format!("无法读取缓存目录：{error}"))? {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("无法读取缓存目录：{error}"))?
+        {
             let entry = entry.map_err(|error| format!("无法读取缓存条目：{error}"))?;
             let metadata = entry
                 .file_type()
@@ -479,7 +606,10 @@ fn add_directory<W: Write + Seek>(
             let relative = path
                 .strip_prefix(source_root)
                 .map_err(|_| "缓存路径超出允许目录。".to_string())?;
-            let name = format!("{archive_root}/{}", relative.to_string_lossy().replace('\\', "/"));
+            let name = format!(
+                "{archive_root}/{}",
+                relative.to_string_lossy().replace('\\', "/")
+            );
             add_file(archive, &path, &name)?;
         }
     }
@@ -516,7 +646,8 @@ fn extract_entry<R: Read + Seek>(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("无法创建导入目录：{error}"))?;
     }
-    let mut output = File::create(target).map_err(|error| format!("无法创建导入文件：{error}"))?;
+    let mut output =
+        File::create(target).map_err(|error| format!("无法创建导入文件：{error}"))?;
     io::copy(&mut entry, &mut output).map_err(|error| format!("无法提取 {name}：{error}"))?;
     Ok(())
 }
@@ -543,10 +674,13 @@ fn extract_cache_entries<R: Read + Seek>(
         account_archive_bytes(total_bytes, entry.size())?;
         let target = target_root.join(relative);
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("无法创建缓存导入目录：{error}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建缓存导入目录：{error}"))?;
         }
-        let mut output = File::create(&target).map_err(|error| format!("无法创建缓存文件：{error}"))?;
-        io::copy(&mut entry, &mut output).map_err(|error| format!("无法提取缓存文件：{error}"))?;
+        let mut output =
+            File::create(&target).map_err(|error| format!("无法创建缓存文件：{error}"))?;
+        io::copy(&mut entry, &mut output)
+            .map_err(|error| format!("无法提取缓存文件：{error}"))?;
         extracted += 1;
     }
     Ok(extracted)
@@ -567,15 +701,21 @@ fn copy_directory_contents(source: &Path, target: &Path) -> Result<(), String> {
     }
     let mut stack = vec![(source.to_path_buf(), target.to_path_buf())];
     while let Some((current_source, current_target)) = stack.pop() {
-        fs::create_dir_all(&current_target).map_err(|error| format!("无法创建缓存目录：{error}"))?;
-        for entry in fs::read_dir(&current_source).map_err(|error| format!("无法读取导入缓存：{error}"))? {
+        fs::create_dir_all(&current_target)
+            .map_err(|error| format!("无法创建缓存目录：{error}"))?;
+        for entry in fs::read_dir(&current_source)
+            .map_err(|error| format!("无法读取导入缓存：{error}"))?
+        {
             let entry = entry.map_err(|error| format!("无法读取导入缓存条目：{error}"))?;
-            let file_type = entry.file_type().map_err(|error| format!("无法读取缓存类型：{error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("无法读取缓存类型：{error}"))?;
             let destination = current_target.join(entry.file_name());
             if file_type.is_dir() {
                 stack.push((entry.path(), destination));
             } else if file_type.is_file() {
-                fs::copy(entry.path(), destination).map_err(|error| format!("无法恢复缓存文件：{error}"))?;
+                fs::copy(entry.path(), destination)
+                    .map_err(|error| format!("无法恢复缓存文件：{error}"))?;
             }
         }
     }
@@ -602,6 +742,14 @@ fn temporary_sibling(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(format!(".{file_name}.{}.{}", nonce(), suffix))
 }
 
+fn remove_path(path: &Path) {
+    if path.is_dir() {
+        let _ = fs::remove_dir_all(path);
+    } else {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn remove_sqlite_sidecars(path: &Path) {
     let _ = fs::remove_file(format!("{}-wal", path.to_string_lossy()));
     let _ = fs::remove_file(format!("{}-shm", path.to_string_lossy()));
@@ -616,7 +764,7 @@ fn nonce() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_archive_bytes, PortableSettings, MAX_ARCHIVE_BYTES};
+    use super::*;
 
     #[test]
     fn rejects_oversized_archives() {
@@ -636,5 +784,47 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("cookie"));
         assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn restores_original_database_and_cache_when_commit_fails() {
+        let root = temporary_directory("quepic-rollback-test").unwrap();
+        let database_path = root.join("quepic.db");
+        let imported_database = root.join("broken.sqlite");
+        let cache_path = root.join("previews");
+
+        database::initialize(&database_path).unwrap();
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE rollback_marker (value TEXT NOT NULL); INSERT INTO rollback_marker VALUES ('keep');")
+            .unwrap();
+        drop(connection);
+
+        fs::create_dir_all(&cache_path).unwrap();
+        fs::write(cache_path.join("marker.txt"), b"keep").unwrap();
+
+        let imported = Connection::open(&imported_database).unwrap();
+        imported
+            .execute_batch("CREATE TABLE assets (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        drop(imported);
+
+        let result = restore_library_transaction(
+            &database_path,
+            &imported_database,
+            &cache_path,
+            None,
+            &[],
+        );
+        assert!(result.is_err());
+
+        let restored = Connection::open(&database_path).unwrap();
+        let marker: String = restored
+            .query_row("SELECT value FROM rollback_marker", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(marker, "keep");
+        assert_eq!(fs::read(cache_path.join("marker.txt")).unwrap(), b"keep");
+
+        let _ = fs::remove_dir_all(root);
     }
 }
