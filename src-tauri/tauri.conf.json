@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "QuePic",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "com.weepwood.quepic",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -42,6 +42,6 @@
     ],
     "category": "Productivity",
     "shortDescription": "语雀图片上传与本地管理工具",
-    "longDescription": "通过应用内登录语雀上传图片，并使用文件夹、标签、共享图库、持久队列、压缩预览缓存、知识库与每日图片文档稳定管理图片资产。"
+    "longDescription": "通过主子账号智能路由上传语雀图片，并使用持久文件夹任务、统一设置、文件夹、标签、共享图库、整点额度与压缩预览缓存管理图片资产。"
   }
 }
