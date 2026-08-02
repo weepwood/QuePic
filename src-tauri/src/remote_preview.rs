@@ -50,12 +50,13 @@ impl RequestLimiter {
     }
 }
 
-pub async fn download_thumbnail(
+pub async fn download_preview(
     limiter: Arc<RequestLimiter>,
     remote_url: &str,
+    prefer_original: bool,
 ) -> Result<DownloadedImage, String> {
     let normalized = normalize_remote_url(remote_url)?;
-    let candidates = thumbnail_candidates(&normalized);
+    let candidates = preview_candidates(&normalized, prefer_original);
     let mut errors = Vec::new();
 
     for candidate in candidates {
@@ -67,7 +68,7 @@ pub async fn download_thumbnail(
     }
 
     Err(format!(
-        "无法通过已上传 URL 获取缩略图：{}",
+        "无法通过已上传 URL 获取图片：{}",
         errors.last().cloned().unwrap_or_else(|| "远程地址不可用。".into())
     ))
 }
@@ -78,7 +79,7 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
         .timeout(Duration::from_secs(30))
         .redirect(Policy::none())
         .build()
-        .map_err(|error| format!("无法初始化远程缩略图客户端：{error}"))?;
+        .map_err(|error| format!("无法初始化远程图片客户端：{error}"))?;
 
     let mut response = client
         .get(url.clone())
@@ -86,13 +87,13 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
         .header(header::USER_AGENT, USER_AGENT)
         .send()
         .await
-        .map_err(|error| format!("远程缩略图请求失败：{error}"))?;
+        .map_err(|error| format!("远程图片请求失败：{error}"))?;
 
     if response.status().is_redirection() {
-        return Err("远程缩略图地址返回重定向，已拒绝继续请求。".into());
+        return Err("远程图片地址返回重定向，已拒绝继续请求。".into());
     }
     if !response.status().is_success() {
-        return Err(format!("远程缩略图请求失败（HTTP {}）。", response.status().as_u16()));
+        return Err(format!("远程图片请求失败（HTTP {}）。", response.status().as_u16()));
     }
     if response.content_length().unwrap_or(0) as usize > MAX_IMAGE_DOWNLOAD_BYTES {
         return Err("远程图片超过 50 MB 下载限制。".into());
@@ -114,7 +115,7 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| format!("读取远程缩略图失败：{error}"))?
+        .map_err(|error| format!("读取远程图片失败：{error}"))?
     {
         if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_DOWNLOAD_BYTES {
             return Err("远程图片超过 50 MB 下载限制。".into());
@@ -128,12 +129,15 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
     Ok(DownloadedImage { bytes, mime_type })
 }
 
-fn thumbnail_candidates(url: &Url) -> Vec<Url> {
+fn preview_candidates(url: &Url, prefer_original: bool) -> Vec<Url> {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let has_transform = url.query_pairs().any(|(key, _)| key == "x-oss-process");
     let mut candidates = Vec::new();
 
-    if (host == "nlark.com" || host.ends_with(".nlark.com")) && !has_transform {
+    if !prefer_original
+        && (host == "nlark.com" || host.ends_with(".nlark.com"))
+        && !has_transform
+    {
         let mut optimized = url.clone();
         optimized
             .query_pairs_mut()
@@ -169,15 +173,21 @@ fn normalize_remote_url(raw_url: &str) -> Result<Url, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_remote_url, thumbnail_candidates};
+    use super::{normalize_remote_url, preview_candidates};
 
     #[test]
-    fn creates_optimized_nlark_candidate_before_original() {
+    fn creates_optimized_nlark_candidate_for_grid_thumbnail() {
         let url = normalize_remote_url("https://cdn.nlark.com/yuque/test.png").unwrap();
-        let candidates = thumbnail_candidates(&url);
+        let candidates = preview_candidates(&url, false);
         assert_eq!(candidates.len(), 2);
         assert!(candidates[0].as_str().contains("x-oss-process"));
         assert_eq!(candidates[1], url);
+    }
+
+    #[test]
+    fn uses_original_url_only_for_detail_preview() {
+        let url = normalize_remote_url("https://cdn.nlark.com/yuque/test.png").unwrap();
+        assert_eq!(preview_candidates(&url, true), vec![url]);
     }
 
     #[test]
