@@ -40,6 +40,43 @@ jobs:
           start = source.index(start_marker) + len(start_marker)
           end = source.index(end_marker, start)
           script = textwrap.dedent(source[start:end])
+          robust_helper = r'''
+          import re
+          import textwrap
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count == 1:
+                  file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+                  return
+              if count > 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}\n--- old ---\n{old}")
+
+              old_lines = old.strip("\n").splitlines()
+              pattern = "\\n".join(
+                  r"[ \\t]*" + re.escape(line.lstrip()) if line.strip() else r"[ \\t]*"
+                  for line in old_lines
+              )
+              matches = list(re.finditer(pattern, text, flags=re.MULTILINE))
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"{path}: indentation-tolerant match expected one result, found {len(matches)}\n"
+                      f"--- old ---\n{old}"
+                  )
+              match = matches[0]
+              base_indent = re.match(r"[ \\t]*", match.group(0)).group(0)
+              replacement_lines = textwrap.dedent(new).strip("\n").splitlines()
+              replacement = "\n".join(
+                  base_indent + line if line else "" for line in replacement_lines
+              )
+              file_path.write_text(
+                  text[:match.start()] + replacement + text[match.end():],
+                  encoding="utf-8",
+              )
+          '''
+          script = script.replace('\nlib = "src-tauri/src/lib.rs"', '\n' + textwrap.dedent(robust_helper) + '\nlib = "src-tauri/src/lib.rs"', 1)
           Path('/tmp/apply-quepic-fix.sh').write_text(script, encoding='utf-8')
           PY
           bash /tmp/apply-quepic-fix.sh
