@@ -38,6 +38,7 @@ jobs:
                   break
               script_lines.append(line[10:] if line.startswith('          ') else '')
           script = '\n'.join(script_lines) + '\n'
+          script = script.replace('if count != 1:', 'if count < 1:')
           script = script.replace(
               'rm .github/workflows/apply-upload-context.yml\n          git config',
               'rm .github/workflows/apply-upload-context.yml .github/upload-context-trigger\n'
