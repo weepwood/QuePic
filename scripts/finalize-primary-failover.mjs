@@ -82,6 +82,7 @@ writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 // The first build ran before the accounting correction above. Rebuild once with
 // the restored package script so the exact committed frontend is type-checked.
 execFileSync('npm', ['run', 'build'], { stdio: 'inherit' });
+execFileSync('npm', ['run', 'icons'], { stdio: 'inherit' });
 
 const validations = [
   ['cargo', ['check', '--manifest-path', 'src-tauri/Cargo.toml']],
