@@ -242,7 +242,13 @@ async fn ensure_preview(
         }
     }
 
-    let public_error = match remote_preview::download_thumbnail(preview_limiter, &asset.remote_url).await {
+    let public_error = match remote_preview::download_preview(
+        preview_limiter,
+        &asset.remote_url,
+        prefer_original,
+    )
+    .await
+    {
         Ok(downloaded) => {
             let preview = cache_and_record_task(
                 cache_lock.clone(),
