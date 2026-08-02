@@ -424,7 +424,7 @@ async fn list_repositories(
         right
             .managed
             .cmp(&left.managed)
-            .then_with(|| left.name.locale_cmp(&right.name))
+            .then_with(|| left.name.cmp(&right.name))
     });
     Ok(repositories)
 }
@@ -476,7 +476,7 @@ async fn list_documents(
         right
             .updated_at
             .cmp(&left.updated_at)
-            .then_with(|| left.title.locale_cmp(&right.title))
+            .then_with(|| left.title.cmp(&right.title))
     });
     Ok(documents)
 }
@@ -822,14 +822,15 @@ fn value_to_i64(value: Option<&Value>) -> Option<i64> {
 
 fn extract_error_message(body: &str) -> Option<String> {
     let value: Value = serde_json::from_str(body).ok()?;
-    [
+    let message = [
         value.get("message"),
         value.get("error"),
         value.get("data").and_then(|data| data.get("message")),
     ]
     .into_iter()
     .flatten()
-    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned))
+    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned));
+    message
 }
 
 #[cfg(test)]

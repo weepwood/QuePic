@@ -90,10 +90,7 @@ pub fn clear_cache(cache_root: &Path) -> Result<(), String> {
     fs::create_dir_all(cache_root).map_err(|error| format!("无法重新创建图片缓存目录：{error}"))
 }
 
-fn cache_compact_raster(
-    asset_dir: &Path,
-    image: &DynamicImage,
-) -> Result<(PathBuf, PathBuf), String> {
+fn cache_compact_raster(asset_dir: &Path, image: &DynamicImage) -> Result<(PathBuf, PathBuf), String> {
     let preview_path = encode_resized_image(
         image,
         PREVIEW_EDGE,
@@ -297,17 +294,9 @@ mod tests {
         }
         let source = DynamicImage::ImageRgb8(source);
         let mut encoded_source = Cursor::new(Vec::new());
-        source
-            .write_to(&mut encoded_source, ImageFormat::Png)
-            .unwrap();
+        source.write_to(&mut encoded_source, ImageFormat::Png).unwrap();
 
-        let cached = cache_image(
-            &root,
-            &"b".repeat(64),
-            "image/png",
-            encoded_source.get_ref(),
-        )
-        .unwrap();
+        let cached = cache_image(&root, &"b".repeat(64), "image/png", encoded_source.get_ref()).unwrap();
         assert!(cached.original_path.ends_with("preview.jpg"));
         assert!(cached.thumbnail_path.ends_with("thumbnail.jpg"));
         assert!(cached.cache_bytes < encoded_source.get_ref().len() as i64);
@@ -326,13 +315,7 @@ mod tests {
         fs::create_dir_all(&asset_dir).unwrap();
         fs::write(asset_dir.join("original.gif"), b"legacy").unwrap();
 
-        let cached = cache_image(
-            &root,
-            &sha,
-            "image/svg+xml",
-            b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
-        )
-        .unwrap();
+        let cached = cache_image(&root, &sha, "image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").unwrap();
         assert!(cached.original_path.ends_with("preview.svg"));
         assert_eq!(cached.original_path, cached.thumbnail_path);
         assert!(!asset_dir.join("original.gif").exists());
