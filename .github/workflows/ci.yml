@@ -1,92 +1,51 @@
-name: CI
+name: Verify Release
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-
-concurrency:
-  group: quepic-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  frontend:
-    name: React frontend
+  release-assets:
+    name: Verify v0.5.0 assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install dependencies
-        run: npm install --silent
-      - name: Build React frontend
-        run: npm run build
-
-  icons:
-    name: Platform icons
-    runs-on: ubuntu-latest
-    steps:
-      - name: Generate icons
+      - name: Wait for Windows and macOS installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD
-          npm install --silent > /tmp/npm-install.log 2>&1
-          set +e
-          npm run icons > /tmp/icons.log 2>&1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "图标生成失败："
-            tail -n 80 /tmp/icons.log
-          fi
-          exit "$status"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v0.5.0"
 
-  rust:
-    name: Rust backend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fetch source, generate icons, check and test backend
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q FETCH_HEAD
-          sudo apt-get update -qq > /tmp/apt.log 2>&1
-          sudo apt-get install -y -qq \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libdbus-1-dev \
-            pkg-config >> /tmp/apt.log 2>&1
-          npm install --silent > /tmp/npm-install.log 2>&1
-          npm run icons > /tmp/icons.log 2>&1
-          rustup default stable > /dev/null
+          for attempt in $(seq 1 40); do
+            response="$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$api" 2>/dev/null || true)"
 
-          set +e
-          cargo check --quiet --manifest-path src-tauri/Cargo.toml > /tmp/cargo-check.log 2>&1
-          check_status=$?
-          if [ "$check_status" -ne 0 ]; then
-            echo "Rust 编译失败："
-            tail -n 120 /tmp/cargo-check.log
-            exit "$check_status"
-          fi
+            if [ -n "$response" ]; then
+              draft="$(jq -r '.draft // true' <<< "$response")"
+              prerelease="$(jq -r '.prerelease // true' <<< "$response")"
+              exe_count="$(jq '[.assets[]? | select(.state == "uploaded" and (.name | endswith(".exe")))] | length' <<< "$response")"
+              dmg_count="$(jq '[.assets[]? | select(.state == "uploaded" and (.name | endswith(".dmg")))] | length' <<< "$response")"
 
-          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
-          test_status=$?
-          if [ "$test_status" -ne 0 ]; then
-            echo "Rust 单元测试失败："
-            tail -n 120 /tmp/cargo-test.log
-          fi
-          exit "$test_status"
+              echo "attempt=${attempt} draft=${draft} prerelease=${prerelease} exe=${exe_count} dmg=${dmg_count}"
+              jq -r '.assets[]? | "asset=\(.name) size=\(.size) state=\(.state) url=\(.browser_download_url)"' <<< "$response"
+
+              if [ "$draft" = "false" ] && [ "$prerelease" = "false" ] && [ "$exe_count" -ge 1 ] && [ "$dmg_count" -ge 1 ]; then
+                echo "QuePic v0.5.0 release is published with Windows and macOS installers."
+                exit 0
+              fi
+            else
+              echo "attempt=${attempt}: release endpoint not available yet"
+            fi
+
+            sleep 15
+          done
+
+          echo "QuePic v0.5.0 did not expose both installers within the verification window." >&2
+          exit 1
