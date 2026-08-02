@@ -1,0 +1,75 @@
+name: Fix Yuque Feature Rust
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-rust:
+    if: github.head_ref == 'feat/yuque-library-token-tier'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Fix Rust source and remove unrelated formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/yuque_openapi.rs')
+          text = path.read_text()
+          replacements = [
+              ('.then_with(|| left.name.locale_cmp(&right.name))', '.then_with(|| left.name.cmp(&right.name))'),
+              ('.then_with(|| left.title.locale_cmp(&right.title))', '.then_with(|| left.title.cmp(&right.title))'),
+              ('''    [
+                  value.get("message"),
+                  value.get("error"),
+                  value.get("data").and_then(|data| data.get("message")),
+              ]
+              .into_iter()
+              .flatten()
+              .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned))
+          }''', '''    let message = [
+                  value.get("message"),
+                  value.get("error"),
+                  value.get("data").and_then(|data| data.get("message")),
+              ]
+              .into_iter()
+              .flatten()
+              .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned));
+              message
+          }'''),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, got {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          git fetch origin main
+          git checkout origin/main -- \
+            src-tauri/src/accounts.rs \
+            src-tauri/src/backup.rs \
+            src-tauri/src/credentials.rs \
+            src-tauri/src/database.rs \
+            src-tauri/src/preview.rs \
+            src-tauri/src/remote_preview.rs
+          rm .github/workflows/fix-yuque-feature.yml
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: 修复语雀管理功能 Rust 编译问题'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
