@@ -19,37 +19,9 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-interface AccountProfile {
-  account_name: string;
-  credential_configured: boolean;
-  token_configured: boolean;
-  asset_count: number;
-  cached_count: number;
-  updated_at: string | null;
-}
-
-interface PortableSettings {
-  active_account: string;
-  allow_wordpress_fallback: boolean;
-  upload_category: string;
-  book_id: string;
-  account_names: string[];
-}
-
-interface BackupResult {
-  cancelled: boolean;
-  path: string | null;
-  includes_library: boolean;
-  includes_cache: boolean;
-}
-
-interface ImportResult {
-  cancelled: boolean;
-  settings: PortableSettings | null;
-  restored_library: boolean;
-  restored_cache: boolean;
-  restored_cache_files: number;
-}
+import { exportBackup as exportBackupArchive, importBackup as importBackupArchive } from '../lib/backup';
+import { setMaintenanceState } from '../lib/maintenance';
+import type { AccountProfile, PortableSettings } from '../types';
 
 type BusyAction = 'accounts' | 'login' | 'export' | 'import' | null;
 type ImportMode = 'settings' | 'library' | 'full';
@@ -179,17 +151,41 @@ export function AccountBackupManager() {
     upload_category: localStorage.getItem('quepic-upload-category') || '未分类',
     book_id: localStorage.getItem('quepic-book-id') || '',
     account_names: accounts.map((account) => account.account_name),
+    primary_account: localStorage.getItem('quepic-primary-account') || activeAccount,
+    account_failover_enabled: localStorage.getItem('quepic-account-failover') !== 'false',
+    knowledge_base_url: localStorage.getItem('quepic-knowledge-base-url') || '',
+    document_url: localStorage.getItem('quepic-document-url') || '',
+    upload_tags: localStorage.getItem('quepic-upload-tags') || '',
+    library_view: localStorage.getItem('quepic-library-view') === 'square' ? 'square' : 'original',
   });
 
-  const exportBackup = async (includeLibrary: boolean, includeCache: boolean) => {
-    setBusy('export');
+  const runBackupMaintenance = async <T,>(
+    action: 'export' | 'import',
+    task: () => Promise<T>,
+  ): Promise<T> => {
+    const maintenanceMessage = action === 'export'
+      ? 'QuePic 正在创建一致性备份，图库、上传和账号操作已暂停。'
+      : 'QuePic 正在验证并恢复备份，所有数据库操作已暂停。';
+    setBusy(action);
     setMessage(null);
+    setMaintenanceState(true, maintenanceMessage);
+    document.body.dataset.quepicMaintenance = 'true';
     try {
-      const result = await invoke<BackupResult>('export_backup', {
-        settings: portableSettings(),
+      return await task();
+    } finally {
+      delete document.body.dataset.quepicMaintenance;
+      setMaintenanceState(false);
+      setBusy(null);
+    }
+  };
+
+  const exportBackup = async (includeLibrary: boolean, includeCache: boolean) => {
+    try {
+      const result = await runBackupMaintenance('export', () => exportBackupArchive(
+        portableSettings(),
         includeLibrary,
         includeCache,
-      });
+      ));
       if (!result.cancelled) {
         setMessage({
           type: 'success',
@@ -202,8 +198,6 @@ export function AccountBackupManager() {
       }
     } catch (error) {
       setMessage({ type: 'error', text: normalizeError(error) });
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -217,13 +211,11 @@ export function AccountBackupManager() {
         : null;
     if (confirmation && !window.confirm(confirmation)) return;
 
-    setBusy('import');
-    setMessage(null);
     try {
-      const result = await invoke<ImportResult>('import_backup', {
+      const result = await runBackupMaintenance('import', () => importBackupArchive(
         restoreLibrary,
         restoreCache,
-      });
+      ));
       if (result.cancelled || !result.settings) return;
       applyPortableSettings(result.settings);
       setMessage({
@@ -237,10 +229,22 @@ export function AccountBackupManager() {
       window.setTimeout(() => window.location.reload(), 900);
     } catch (error) {
       setMessage({ type: 'error', text: normalizeError(error) });
-    } finally {
-      setBusy(null);
     }
   };
+
+  const maintenanceOverlay = (busy === 'export' || busy === 'import') && createPortal(
+    <div className="global-maintenance-overlay" role="dialog" aria-modal="true" aria-live="assertive">
+      <div className="global-maintenance-card">
+        <LoaderCircle className="spin" size={30} />
+        <strong>{busy === 'export' ? '正在导出 QuePic 备份' : '正在恢复 QuePic 备份'}</strong>
+        <p>{busy === 'export'
+          ? '正在暂停数据操作、创建 SQLite 一致性快照并打包所选内容。'
+          : '正在校验备份、执行 WAL 安全切换，并准备在任何失败时恢复原数据。'}</p>
+        <small>请勿关闭应用。操作结束后所有功能会自动恢复。</small>
+      </div>
+    </div>,
+    document.body,
+  );
 
   return (
     <>
@@ -295,9 +299,9 @@ export function AccountBackupManager() {
               <section className="backup-section">
                 <div className="section-heading"><div><Archive size={20} /><span><strong>导出备份</strong><small>凭据始终留在操作系统密钥库中</small></span></div></div>
                 <div className="backup-options">
-                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(false, false)}><Download size={18} /><span><strong>导出设置</strong><small>账号名称、当前账号和界面选项</small></span></button>
-                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(true, false)}><DatabaseBackup size={18} /><span><strong>设置与图片索引</strong><small>增加图片记录、分类和上传额度</small></span></button>
-                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(true, true)}><HardDrive size={18} /><span><strong>完整备份</strong><small>同时打包本地预览与缩略图缓存</small></span></button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(false, false)}><Download size={18} /><span><strong>导出设置</strong><small>主账号、文档目标、账号名称和界面选项</small></span></button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(true, false)}><DatabaseBackup size={18} /><span><strong>设置与图片索引</strong><small>增加图片记录、文件夹、标签和上传额度</small></span></button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => void exportBackup(true, true)}><HardDrive size={18} /><span><strong>完整备份</strong><small>同时打包本地详情预览与缩略图缓存</small></span></button>
                 </div>
               </section>
 
@@ -318,6 +322,7 @@ export function AccountBackupManager() {
         </div>,
         document.body,
       )}
+      {maintenanceOverlay}
     </>
   );
 }
@@ -326,6 +331,15 @@ function applyPortableSettings(settings: PortableSettings) {
   localStorage.setItem('quepic-account', settings.active_account || DEFAULT_ACCOUNT);
   localStorage.setItem('quepic-wordpress-fallback', String(settings.allow_wordpress_fallback));
   localStorage.setItem('quepic-upload-category', settings.upload_category || '未分类');
+  localStorage.setItem('quepic-primary-account', settings.primary_account || settings.active_account || DEFAULT_ACCOUNT);
+  localStorage.setItem('quepic-account-failover', String(settings.account_failover_enabled !== false));
+  localStorage.setItem('quepic-library-view', settings.library_view === 'square' ? 'square' : 'original');
+  if (settings.upload_tags) localStorage.setItem('quepic-upload-tags', settings.upload_tags);
+  else localStorage.removeItem('quepic-upload-tags');
+  if (settings.knowledge_base_url) localStorage.setItem('quepic-knowledge-base-url', settings.knowledge_base_url);
+  else localStorage.removeItem('quepic-knowledge-base-url');
+  if (settings.document_url) localStorage.setItem('quepic-document-url', settings.document_url);
+  else localStorage.removeItem('quepic-document-url');
   if (settings.book_id) localStorage.setItem('quepic-book-id', settings.book_id);
   else localStorage.removeItem('quepic-book-id');
 }

@@ -3,6 +3,7 @@ import { ImageOff, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 
+import { isMaintenanceActive } from '../lib/maintenance';
 import { ensurePreview } from '../lib/tauri';
 import type { AssetRecord } from '../types';
 
@@ -93,6 +94,11 @@ export function AssetPreview({
         return;
       }
 
+      if (isMaintenanceActive()) {
+        commit(() => setState('idle'));
+        return;
+      }
+
       commit(() => setState('loading'));
       try {
         const preview = await ensurePreview(
@@ -110,7 +116,7 @@ export function AssetPreview({
       } catch {
         commit(() => {
           setSrc(null);
-          setState('failed');
+          setState(isMaintenanceActive() ? 'idle' : 'failed');
         });
       }
     };
@@ -122,6 +128,7 @@ export function AssetPreview({
   }, [allowWordpressFallback, asset.id, onCacheChanged, preferOriginal, retryNonce, storedPath, visible]);
 
   const retryAfterImageError = () => {
+    if (isMaintenanceActive()) return;
     setSrc(null);
     setState('idle');
     setRetryNonce((value) => value + 1);
