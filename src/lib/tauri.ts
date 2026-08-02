@@ -2,9 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AssetRecord,
   CacheStats,
-  CreateYuqueDocumentInput,
   CredentialStatus,
   PreviewResult,
+  SaveYuqueDocumentInput,
   SecretStatus,
   UploadQuotaStatus,
   UploadResult,
@@ -127,8 +127,8 @@ export async function uploadImage(
   });
 }
 
-export async function createYuqueDocument(
-  input: CreateYuqueDocumentInput,
+export async function saveYuqueDocument(
+  input: SaveYuqueDocumentInput,
 ): Promise<YuqueDocumentResult> {
-  return invoke<YuqueDocumentResult>('create_yuque_document', { input });
+  return invoke<YuqueDocumentResult>('save_yuque_document', { input });
 }
