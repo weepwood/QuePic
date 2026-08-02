@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/finalize-primary-failover.mjs",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "icons": "node scripts/generate-icons.mjs",
     "tauri": "tauri",

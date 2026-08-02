@@ -47,6 +47,7 @@ export interface UploadQueueItem {
   width: number | null;
   height: number | null;
   accountName: string;
+  uploadAccountName?: string;
   category: string;
   tags: string[];
   createdAt: number;
@@ -62,11 +63,13 @@ export interface StoredUploadQueueItem {
   width: number | null;
   height: number | null;
   accountName: string;
+  uploadAccountName?: string;
   category: string;
   tags: string[];
   createdAt: number;
   scheduledAt: number | null;
   status: 'waiting' | 'scheduled' | 'failed';
+  result?: UploadResult;
   error?: string;
 }
 

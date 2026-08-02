@@ -513,7 +513,7 @@ async fn upload_image(
     if quota.remaining <= 0 {
         let reset = quota.reset_at.unwrap_or_else(|| "稍后".into());
         return Err(format!(
-            "当前账号过去一小时已达到 {} 次上传尝试，请在 {reset} 后继续。",
+            "当前账号本整点小时已达到 {} 次上传尝试；额度会在 {reset} 整点重置。",
             quota.limit
         ));
     }
