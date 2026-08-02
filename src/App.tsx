@@ -526,7 +526,9 @@ export default function App() {
   const primaryTokenReady = primaryProfile?.token_configured
     ?? (primaryAccountName === accountName && tokenReady);
   const fallbackProfiles = accountProfiles.filter(
-    (profile) => profile.account_name !== primaryAccountName && profile.credential_configured,
+    (profile) => profile.account_name !== primaryAccountName
+      && profile.credential_configured
+      && Boolean(getStoredUploadContext(profile.account_name)),
   );
   const maxUploadBytes = primaryTokenReady ? TOKEN_MAX_UPLOAD_BYTES : NO_TOKEN_MAX_UPLOAD_BYTES;
   const maxUploadMegabytes = maxUploadBytes / 1024 / 1024;
@@ -673,7 +675,7 @@ export default function App() {
   const addFiles = async (files: File[]) => {
     const accepted = files.filter((file) => isImageFile(file) && file.size > 0 && file.size <= maxUploadBytes);
     if (accepted.length !== files.length) {
-      showToast('error', `已忽略非图片、空文件或超过 ${maxUploadMegabytes} MB 的图片。${tokenReady ? '' : ' 保存 OpenAPI Token 后可上传 50 MB 图片。'}`);
+      showToast('error', `已忽略非图片、空文件或超过 ${maxUploadMegabytes} MB 的图片。${primaryTokenReady ? '' : ' 主账号保存 OpenAPI Token 后可上传 50 MB 图片。'}`);
     }
     if (accepted.length === 0) return;
     const account = primaryAccountName;
@@ -720,7 +722,6 @@ export default function App() {
   const uploadOne = useCallback(async (
     id: string,
     uploadAccountName: string,
-    contextAccountName: string,
     deferRefresh = false,
   ) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
@@ -756,7 +757,6 @@ export default function App() {
         item.height,
         item.category,
         item.tags || [],
-        contextAccountName,
       );
       markQueueItem(id, {
         status: 'success',
@@ -856,7 +856,9 @@ export default function App() {
     const ordered = [
       primary,
       ...(accountFailoverEnabled
-        ? profiles.filter((profile) => profile.account_name !== targetPrimary && profile.credential_configured)
+        ? profiles.filter((profile) => profile.account_name !== targetPrimary
+          && profile.credential_configured
+          && Boolean(getStoredUploadContext(profile.account_name)))
         : []),
     ];
     const quotas = await Promise.all(ordered.map((profile) => getUploadQuotaStatus(profile.account_name)));
@@ -887,7 +889,6 @@ export default function App() {
       const result = await uploadOne(
         item.id,
         item.uploadAccountName || targetPrimary,
-        targetPrimary,
         true,
       );
       if (!result) {
@@ -911,7 +912,7 @@ export default function App() {
           continue;
         }
         remaining.splice(index, 1);
-        const result = await uploadOne(item.id, candidate.profile.account_name, targetPrimary, true);
+        const result = await uploadOne(item.id, candidate.profile.account_name, true);
         if (!result) {
           // 语雀按请求尝试计数；失败也必须占用当前账号的本整点额度。
           available -= 1;
@@ -1250,7 +1251,7 @@ export default function App() {
                 </div>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
                 <datalist id="tag-options">{availableTags.map((tag) => <option value={tag} key={tag} />)}</datalist>
-                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>每账号 140 张/整点小时</span><span>主账号优先 · 从账号接力</span><span>队列持久化</span></div>
+                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{primaryTokenReady ? '主账号 Token 增强模式' : '主账号基础模式'}</span><span>每账号 140 张/整点小时</span><span>主账号优先 · 从账号接力</span><span>队列持久化</span></div>
                 <div className="actions">
                   <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" disabled={!queueReady} onClick={async () => {
@@ -1289,7 +1290,7 @@ export default function App() {
                 )}
                 {!primaryCredentialReady && <div className="warning">主账号“{primaryAccountName}”尚未保存语雀会话。</div>}
                 {primaryCredentialReady && !primaryTokenReady && <div className="warning">主账号“{primaryAccountName}”必须配置 OpenAPI Token；从账号可以不配置 Token。</div>}
-                {primaryCredentialReady && primaryTokenReady && <div className="queue-auto-context-note">主账号负责当天文档；主账号额度用满后，已登录从账号会自动接力上传，图片仍统一写入主账号当天文档。</div>}
+                {primaryCredentialReady && primaryTokenReady && <div className="queue-auto-context-note">主账号负责当天文档；主账号额度用满后，已登录且已绑定上传上下文的从账号会自动接力，图片仍统一写入主账号当天文档。</div>}
                 {activeQueue.length === 0 ? <div className="empty"><FileImage size={26} /><p>主账号与从账号共同处理的全局上传队列会显示在这里。</p></div> : (
                   <div className="queue-list">
                     {activeQueue.map((item) => (
@@ -1448,12 +1449,12 @@ export default function App() {
                   <div className="panel-heading"><div><span>UPLOAD ROUTING</span><h2>主账号与自动接力</h2><p>主账号平时优先使用并负责当天文档；额度用满后，从账号按账号列表顺序接力。</p></div><Gauge size={20} /></div>
                   <label className="field"><span>主账号</span><select value={primaryAccountName} onChange={(event) => { const value = event.target.value; setPrimaryAccountName(value); localStorage.setItem(PRIMARY_ACCOUNT_STORAGE_KEY, value); }}>{accountProfiles.map((profile) => <option key={profile.account_name} value={profile.account_name}>{profile.account_name}{profile.token_configured ? ' · Token' : ''}</option>)}</select><small>主账号必须同时保存登录会话和 OpenAPI Token。</small></label>
                   <label className="toggle-row">
-                    <span><UserRound size={17} /><span><strong>主账号用满后自动使用从账号</strong><small>从账号只要求登录语雀，可不配置 Token；无 Token 从账号只处理不超过 10 MB 的图片。</small></span></span>
+                    <span><UserRound size={17} /><span><strong>主账号用满后自动使用从账号</strong><small>从账号无需 Token，但必须登录并绑定一个自己有权限的上传文档；无 Token 从账号只处理不超过 10 MB 的图片。</small></span></span>
                     <input className="switch-input" type="checkbox" checked={accountFailoverEnabled} onChange={(event) => { setAccountFailoverEnabled(event.target.checked); localStorage.setItem(ACCOUNT_FAILOVER_STORAGE_KEY, String(event.target.checked)); }} />
                   </label>
                   {!primaryProfile?.credential_configured && <div className="warning">所选主账号尚未登录语雀。</div>}
                   {primaryProfile?.credential_configured && !primaryProfile.token_configured && <div className="warning">所选主账号没有 Token，自动路由不会启动。</div>}
-                  <p className="panel-note">从账号顺序：{fallbackProfiles.length ? fallbackProfiles.map((profile) => profile.account_name).join(' → ') : '暂无其他已登录账号'}。从账号若单独配置上传上下文会优先使用；否则复用主账号当天文档上下文。</p>
+                  <p className="panel-note">可接力从账号顺序：{fallbackProfiles.length ? fallbackProfiles.map((profile) => profile.account_name).join(' → ') : '暂无已登录且已绑定上传上下文的从账号'}。从账号不需要 Token，但上传上下文必须是该账号有权限访问的文档。</p>
                 </div>
 
                 <div className="panel settings-panel">
@@ -1480,7 +1481,7 @@ export default function App() {
                 </div>
 
                 <div className="panel settings-panel upload-context-panel">
-                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>主账号自动使用当天文档；从账号可以留空并复用主账号上下文，也可以单独绑定有权限的文档。</p></div><ExternalLink size={20} /></div>
+                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>主账号自动使用当天文档；每个从账号需单独绑定一个自己有权限的文档作为上传上下文，但不要求配置 Token。</p></div><ExternalLink size={20} /></div>
                 <label className="field"><span>语雀文档 URL</span><input type="url" value={uploadContextInput} onChange={(event) => setUploadContextInput(event.target.value)} placeholder="https://www.yuque.com/账号/知识库/文档" /><small>{tokenReady ? '使用 OpenAPI Token 验证并解析文档 ID。' : '未配置 Token 时，使用当前登录会话读取文档页面并解析 ID。'}本地只保存文档 URL、ID 和标题。</small></label>
                 {uploadContext && <p className="panel-note">已绑定：{uploadContext.title} · 文档 ID {uploadContext.attachable_id}</p>}
                 <div className="actions">

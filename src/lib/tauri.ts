@@ -227,12 +227,11 @@ export async function uploadImage(
   height: number | null,
   category: string,
   tags: string[],
-  contextAccountName = accountName,
 ): Promise<UploadResult> {
-  const context = getStoredUploadContext(accountName) || getStoredUploadContext(contextAccountName);
+  const context = getStoredUploadContext(accountName);
   if (!context) {
     throw new Error(
-      `账号“${accountName}”没有可用上传上下文；请先为主账号“${contextAccountName}”创建当天文档，或为该账号单独验证一个语雀文档 URL。`,
+      `账号“${accountName}”尚未绑定自己有权限的上传上下文文档；从账号可以不配置 Token，但必须先验证一个可访问的语雀文档 URL。`,
     );
   }
 
