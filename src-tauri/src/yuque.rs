@@ -3,8 +3,7 @@ use serde::Deserialize;
 use url::Url;
 
 const UPLOAD_ENDPOINT: &str = "https://www.yuque.com/api/upload/attach";
-const UPLOAD_ATTACHABLE_ID: i64 = 279_127_910;
-const UPLOAD_REFERER: &str = "https://www.yuque.com/weepwood/index/xzkrvd5ehffhtwwb";
+const YUQUE_ORIGIN_REFERER: &str = "https://www.yuque.com/";
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 const BROWSER_ACCEPT: &str = "text/javascript, text/html, application/xml, text/xml, */*";
 const BROWSER_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7";
@@ -36,8 +35,11 @@ pub async fn upload(
     file_name: &str,
     mime_type: &str,
     bytes: Vec<u8>,
+    attachable_id: i64,
+    referer_url: &str,
 ) -> Result<String, String> {
-    let upload_url = build_doc_upload_url(cookie)?;
+    let upload_url = build_doc_upload_url(cookie, attachable_id)?;
+    let referer_url = normalize_document_url(referer_url)?;
     let part = multipart::Part::bytes(bytes)
         .file_name(file_name.to_string())
         .mime_str(mime_type)
@@ -48,7 +50,7 @@ pub async fn upload(
     let response = client
         .post(upload_url)
         .header(header::COOKIE, cookie)
-        .header(header::REFERER, UPLOAD_REFERER)
+        .header(header::REFERER, &referer_url)
         .header(header::ORIGIN, "https://www.yuque.com")
         .header(header::ACCEPT, BROWSER_ACCEPT)
         .header(header::ACCEPT_LANGUAGE, BROWSER_ACCEPT_LANGUAGE)
@@ -109,7 +111,10 @@ pub async fn upload(
     normalize_remote_url(&raw_url)
 }
 
-fn build_doc_upload_url(cookie: &str) -> Result<Url, String> {
+fn build_doc_upload_url(cookie: &str, attachable_id: i64) -> Result<Url, String> {
+    if attachable_id <= 0 {
+        return Err("上传上下文文档 ID 无效，请重新验证文档 URL。".into());
+    }
     let ctoken = cookie_value(cookie, "yuque_ctoken")
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "语雀 Cookie 中缺少 yuque_ctoken，请重新登录后再上传。".to_string())?;
@@ -117,7 +122,7 @@ fn build_doc_upload_url(cookie: &str) -> Result<Url, String> {
         .map_err(|error| format!("语雀上传地址无效：{error}"))?;
     url.query_pairs_mut()
         .append_pair("attachable_type", "Doc")
-        .append_pair("attachable_id", &UPLOAD_ATTACHABLE_ID.to_string())
+        .append_pair("attachable_id", &attachable_id.to_string())
         .append_pair("type", "image")
         .append_pair("ocr", "off")
         .append_pair("ctoken", &ctoken);
@@ -138,7 +143,7 @@ pub async fn download_image(cookie: &str, remote_url: &str) -> Result<Downloaded
     let mut response = client
         .get(&normalized)
         .header(header::COOKIE, cookie)
-        .header(header::REFERER, UPLOAD_REFERER)
+        .header(header::REFERER, YUQUE_ORIGIN_REFERER)
         .header(header::ACCEPT, "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
         .header(header::USER_AGENT, BROWSER_USER_AGENT)
         .send()
@@ -212,6 +217,26 @@ pub fn wordpress_proxy_url(remote_url: &str, width: Option<u32>) -> Result<Strin
     Ok(proxy)
 }
 
+pub fn normalize_document_url(raw_url: &str) -> Result<String, String> {
+    let parsed = Url::parse(raw_url.trim())
+        .map_err(|_| "上传上下文必须是完整的语雀文档 URL。".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("上传上下文文档 URL 必须使用 HTTPS。".into());
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host != "www.yuque.com" && host != "yuque.com" {
+        return Err("上传上下文只支持 yuque.com 文档 URL。".into());
+    }
+    let segments = parsed
+        .path_segments()
+        .map(|segments| segments.filter(|segment| !segment.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if segments.len() < 3 {
+        return Err("上传上下文 URL 必须指向具体语雀文档。".into());
+    }
+    Ok(format!("https://www.yuque.com/{}/{}/{}", segments[0], segments[1], segments[2]))
+}
+
 pub fn normalize_remote_url(raw_url: &str) -> Result<String, String> {
     let normalized = if raw_url.starts_with("//") {
         format!("https:{raw_url}")
@@ -248,14 +273,21 @@ fn secure_client(timeout: std::time::Duration) -> Result<reqwest::Client, String
 
 #[cfg(test)]
 mod tests {
-    use super::{build_doc_upload_url, cookie_value, normalize_remote_url, wordpress_proxy_url};
+    use super::{
+        build_doc_upload_url, cookie_value, normalize_document_url, normalize_remote_url,
+        wordpress_proxy_url,
+    };
 
     #[test]
     fn builds_official_doc_upload_context() {
-        let url = build_doc_upload_url("lang=zh-cn; yuque_ctoken=test-token; current_theme=default").unwrap();
+        let url = build_doc_upload_url(
+        "lang=zh-cn; yuque_ctoken=test-token; current_theme=default",
+        123456,
+    )
+    .unwrap();
         let query = url.query_pairs().collect::<std::collections::HashMap<_, _>>();
         assert_eq!(query.get("attachable_type").map(|value| value.as_ref()), Some("Doc"));
-        assert_eq!(query.get("attachable_id").map(|value| value.as_ref()), Some("279127910"));
+        assert_eq!(query.get("attachable_id").map(|value| value.as_ref()), Some("123456"));
         assert_eq!(query.get("type").map(|value| value.as_ref()), Some("image"));
         assert_eq!(query.get("ocr").map(|value| value.as_ref()), Some("off"));
         assert_eq!(query.get("ctoken").map(|value| value.as_ref()), Some("test-token"));
@@ -264,7 +296,18 @@ mod tests {
     #[test]
     fn requires_ctoken_from_cookie() {
         assert_eq!(cookie_value("a=1; yuque_ctoken=abc-123; b=2", "yuque_ctoken").as_deref(), Some("abc-123"));
-        assert!(build_doc_upload_url("a=1; b=2").is_err());
+        assert!(build_doc_upload_url("a=1; b=2", 123456).is_err());
+        assert!(build_doc_upload_url("yuque_ctoken=abc", 0).is_err());
+    }
+
+    #[test]
+    fn validates_account_document_referer() {
+        assert_eq!(
+            normalize_document_url("https://yuque.com/team/book/document?view=doc_embed").unwrap(),
+            "https://www.yuque.com/team/book/document"
+        );
+        assert!(normalize_document_url("https://example.com/team/book/document").is_err());
+        assert!(normalize_document_url("https://www.yuque.com/team/book").is_err());
     }
 
     #[test]
