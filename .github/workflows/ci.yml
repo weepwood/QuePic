@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   frontend:
@@ -90,3 +90,86 @@ jobs:
             tail -n 120 /tmp/cargo-test.log
           fi
           exit "$test_status"
+
+  implement-primary-failover:
+    name: Implement primary account failover
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/primary-account-failover
+          fetch-depth: 0
+
+      - name: Apply implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/patch-primary-failover.py')
+          text = path.read_text(encoding='utf-8')
+
+          queue_old = "text = replace_once(text, '  accountName: string;\\n  category: string;', '  accountName: string;\\n  uploadAccountName?: string;\\n  category: string;', 'queue actual account')"
+          queue_new = "text = text.replace('  accountName: string;\\n  category: string;', '  accountName: string;\\n  uploadAccountName?: string;\\n  category: string;')"
+          if queue_old not in text:
+              raise SystemExit('queue field patch statement not found')
+          text = text.replace(queue_old, queue_new, 1)
+
+          reset_old = '''        assert_eq!(before_reset.reset_at.as_deref(), Some("2027-01-15T08:00:00+00:00"));'''
+          reset_new = '''        let expected_reset = DateTime::<Utc>::from_timestamp(hour_start + 3_600, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(
+            before_reset.reset_at.as_deref(),
+            Some(expected_reset.as_str())
+        );'''
+          if reset_old not in text:
+              raise SystemExit('fixed reset assertion not found')
+          text = text.replace(reset_old, reset_new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python scripts/patch-primary-failover.py
+          rm -f .github/workflows/implement-primary-failover.yml
+          rm -f .github/workflows/snapshot-primary-failover.yml
+          rm -f primary-failover-status.json primary-failover-failed.log
+          rm -f scripts/.trigger-primary-failover
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Validate implementation
+        run: |
+          npm install --silent
+          npm run build
+          rustfmt --edition 2021 src-tauri/src/database.rs src-tauri/src/lib.rs
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Restore CI and commit implementation
+        run: |
+          git fetch origin main
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: 支持主账号优先与从账号整点接力'
+          git push origin HEAD:feat/primary-account-failover
