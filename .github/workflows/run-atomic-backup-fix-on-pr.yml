@@ -27,6 +27,18 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Install Tauri Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libdbus-1-dev \
+            pkg-config
+
       - name: Extract and apply source patch
         shell: bash
         run: |
@@ -84,10 +96,13 @@ jobs:
       - name: Format and test
         shell: bash
         run: |
+          set -euo pipefail
           rustfmt --edition 2021 src-tauri/src/lib.rs src-tauri/src/accounts.rs src-tauri/src/backup.rs
-          npm install
+          npm install --silent --no-package-lock
           npm run build
-          cargo test --manifest-path src-tauri/Cargo.toml
+          npm run icons
+          cargo check --quiet --manifest-path src-tauri/Cargo.toml
+          cargo test --quiet --manifest-path src-tauri/Cargo.toml --lib
 
       - name: Commit patched sources
         shell: bash
