@@ -470,7 +470,6 @@ export default function App() {
   const nextScheduledAt = activeQueue
     .filter((item) => item.status === 'scheduled' && item.scheduledAt)
     .reduce<number | null>((earliest, item) => earliest === null ? item.scheduledAt : Math.min(earliest, item.scheduledAt || earliest), null);
-  const quotaAvailable = !quota || quota.remaining > 0;
   const maxUploadBytes = tokenReady ? TOKEN_MAX_UPLOAD_BYTES : NO_TOKEN_MAX_UPLOAD_BYTES;
   const maxUploadMegabytes = maxUploadBytes / 1024 / 1024;
   const cachePercent = cacheStats.asset_count > 0
@@ -645,7 +644,7 @@ export default function App() {
     return updated;
   }, [commitQueue]);
 
-  const uploadOne = useCallback(async (id: string) => {
+  const uploadOne = useCallback(async (id: string, deferRefresh = false) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || item.status === 'uploading' || item.status === 'success') return false;
     const credential = await getCredentialStatus(item.accountName);
@@ -664,11 +663,12 @@ export default function App() {
       const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);
       markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
       await removeStoredQueueItem(id);
-    await Promise.all([refreshAssets(), refreshCacheStats()]);
-    if (activeAccountRef.current === item.accountName) {
-      await refreshAccountStatus(item.accountName);
-    }
-    await refreshProfiles();
+      if (!deferRefresh) {
+        await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
+        if (activeAccountRef.current === item.accountName) {
+await refreshAccountStatus(item.accountName);
+        }
+      }
       return true;
     } catch (error) {
       const failed = markQueueItem(id, {
@@ -677,7 +677,7 @@ export default function App() {
         error: normalizeError(error),
       });
       if (failed) await saveStoredQueueItem(toStoredQueueItem(failed));
-      if (activeAccountRef.current === item.accountName) {
+      if (!deferRefresh && activeAccountRef.current === item.accountName) {
         await refreshAccountStatus(item.accountName);
       }
       return false;
@@ -693,11 +693,59 @@ export default function App() {
       setView('settings');
       return showToast('error', '请先为当前账号配置一个有权限的语雀文档作为上传上下文。');
     }
-    if (!quotaAvailable) return showToast('error', `当前小时上传额度已用完，请在 ${formatResetTime(quota?.reset_at || null)} 后继续。`);
-    const ids = queueRef.current
-      .filter((item) => item.accountName === accountName && ['waiting', 'failed', 'scheduled'].includes(item.status))
-      .map((item) => item.id);
-    for (const id of ids) await uploadOne(id);
+
+    const pendingItems = queueRef.current.filter(
+      (item) => item.accountName === accountName && ['waiting', 'failed', 'scheduled'].includes(item.status),
+    );
+    if (pendingItems.length === 0) return showToast('error', '当前账号没有等待上传的图片。');
+
+    const scheduleBatch = async (items: UploadQueueItem[], scheduledAt: number, reason: string) => {
+      const ids = new Set(items.map((item) => item.id));
+      const updated: UploadQueueItem[] = [];
+      commitQueue((current) => current.map((item) => {
+        if (!ids.has(item.id)) return item;
+        const next: UploadQueueItem = { ...item, status: 'scheduled', scheduledAt, error: reason };
+        updated.push(next);
+        return next;
+      }));
+      await saveStoredQueueItems(updated.map(toStoredQueueItem));
+    };
+
+    try {
+      const currentQuota = await getUploadQuotaStatus(accountName);
+      setQuota(currentQuota);
+      if (currentQuota.remaining <= 0) {
+        const scheduledAt = resolveRetryTimestamp(currentQuota.reset_at);
+        await scheduleBatch(pendingItems, scheduledAt, '当前小时额度已满，等待下一批');
+        showToast('success', `当前小时额度已用完，${pendingItems.length} 张图片已安排在 ${formatScheduleTime(scheduledAt)} 自动继续。`);
+        return;
+      }
+
+      const immediateItems = pendingItems.slice(0, currentQuota.remaining);
+      const overflowItems = pendingItems.slice(currentQuota.remaining);
+      let successCount = 0;
+      for (const item of immediateItems) {
+        if (await uploadOne(item.id, true)) successCount += 1;
+      }
+
+      let scheduledCount = 0;
+      let scheduledAt: number | null = null;
+      if (overflowItems.length > 0) {
+        const refreshedQuota = await getUploadQuotaStatus(accountName);
+        scheduledAt = resolveRetryTimestamp(refreshedQuota.reset_at || currentQuota.reset_at);
+        await scheduleBatch(overflowItems, scheduledAt, '本批额度已用完，等待下一小时自动上传');
+        scheduledCount = overflowItems.length;
+      }
+
+      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles(), refreshAccountStatus(accountName)]);
+      const summary = [`已立即上传 ${successCount} 张`];
+      if (scheduledCount > 0 && scheduledAt) {
+        summary.push(`${scheduledCount} 张将在 ${formatScheduleTime(scheduledAt)} 自动继续`);
+      }
+      showToast('success', summary.join('，'));
+    } catch (error) {
+      showToast('error', `批量上传失败：${normalizeError(error)}`);
+    }
   };
 
   const scheduleRemaining = async () => {
@@ -712,7 +760,7 @@ export default function App() {
     if (updated.length === 0) return showToast('error', '当前账号没有可计划的剩余图片。');
     try {
       await saveStoredQueueItems(updated.map(toStoredQueueItem));
-      showToast('success', `已计划 ${updated.length} 张图片，将在 ${formatScheduleTime(scheduledAt)} 自动续传。`);
+      showToast('success', `已将 ${updated.length} 张图片整体延后，将在 ${formatScheduleTime(scheduledAt)} 自动上传。`);
     } catch (error) {
       showToast('error', normalizeError(error));
     }
@@ -757,13 +805,14 @@ export default function App() {
           await rescheduleItems(accountItems, resetAt, '等待下一小时上传额度');
           continue;
         }
-        for (const item of accountItems.slice(0, accountQuota.remaining)) await uploadOne(item.id);
+        for (const item of accountItems.slice(0, accountQuota.remaining)) await uploadOne(item.id, true);
         const overflow = accountItems.slice(accountQuota.remaining);
         if (overflow.length > 0) {
           const resetAt = resolveRetryTimestamp(accountQuota.reset_at);
           await rescheduleItems(overflow, resetAt, '等待下一小时上传额度');
         }
       }
+      await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
       if (activeAccountRef.current) await refreshAccountStatus(activeAccountRef.current);
     } catch (error) {
       const retryAt = Date.now() + 5 * 60 * 1000;
@@ -776,7 +825,7 @@ export default function App() {
     } finally {
       autoUploadRunningRef.current = false;
     }
-  }, [markQueueItem, refreshAccountStatus, rescheduleItems, showToast, uploadOne]);
+  }, [markQueueItem, refreshAccountStatus, refreshAssets, refreshCacheStats, refreshProfiles, rescheduleItems, showToast, uploadOne]);
 
   useEffect(() => {
     if (!queueReady) return undefined;
@@ -963,7 +1012,7 @@ export default function App() {
                   <input value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
                 </label>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
-                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>140 张/小时</span><span>队列持久化</span></div>
+                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>140 张/小时</span><span>额度内连续上传</span><span>队列持久化</span></div>
                 <div className="actions">
                   <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" disabled={!queueReady} onClick={async () => {
@@ -988,17 +1037,17 @@ export default function App() {
                 <div className="panel-heading queue-heading">
                   <div><span>UPLOAD QUEUE · {accountName}</span><h2>上传图片队列</h2><p>{pendingUploadCount ? `${pendingUploadCount} 项等待处理` : '没有待处理任务'}</p></div>
                   <div className="queue-heading-actions">
-                    <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />一小时后上传</button>
-                    <button className="button primary compact" disabled={!credentialReady || !uploadContext || !quotaAvailable || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />全部上传</button>
+                    <button className="button secondary compact" disabled={pendingUploadCount === 0} onClick={() => void scheduleRemaining()}><CalendarClock size={16} />全部延后 1 小时</button>
+                    <button className="button primary compact" disabled={!credentialReady || !uploadContext || pendingUploadCount === 0} onClick={() => void uploadAll()}><UploadCloud size={16} />立即上传本批</button>
                   </div>
                 </div>
                 <div className="quota-strip">
                   <Gauge size={16} />
                   <span>{quota ? `过去一小时已使用 ${quota.used}/${quota.limit}，剩余 ${quota.remaining}` : '正在读取上传额度'}</span>
-                  {quota?.retry_after_seconds ? <b>{formatDuration(quota.retry_after_seconds)} 后可继续</b> : <b>可上传</b>}
+                  {quota?.retry_after_seconds ? <b>{formatDuration(quota.retry_after_seconds)} 后进入下一批</b> : <b>额度内连续上传</b>}
                 </div>
                 {nextScheduledAt && (
-                  <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一次自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>应用关闭时队列仍会保留，下次启动后自动补传已到期任务。</small></div>
+                  <div className="queue-schedule-banner"><CalendarClock size={16} /><span>下一批自动上传：{formatScheduleTime(nextScheduledAt)}</span><small>本小时额度内会连续处理；超出部分保留到下一额度窗口。应用关闭后会在下次启动补传。</small></div>
                 )}
                 {!credentialReady && <div className="warning">当前账号尚未保存语雀会话；队列可继续添加，但到点后会暂停并提示登录。</div>}
                 {credentialReady && !uploadContext && <div className="warning">当前账号尚未配置上传上下文文档。请在设置中验证一个该账号有权限访问的语雀文档 URL。</div>}
@@ -1167,13 +1216,13 @@ export default function App() {
               </div>
 
               <div className="panel settings-panel quota-panel">
-                  <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传速度与额度</h2><p>为语雀上传接口保留安全余量，并支持队列跨小时自动续传。</p></div><Gauge size={20} /></div>
+                  <div className="panel-heading"><div><span>UPLOAD GOVERNOR</span><h2>上传批次与额度</h2><p>当前小时额度内连续上传；额度用完后，剩余任务自动进入下一批。</p></div><Gauge size={20} /></div>
                   <div className="quota-metrics">
                     <div><strong>{quota?.used ?? 0}</strong><small>过去一小时尝试</small></div>
                     <div><strong>{quota?.remaining ?? 140}</strong><small>剩余额度</small></div>
-                    <div><strong>{quota?.minimum_interval_seconds ?? 25}s</strong><small>最小间隔</small></div>
+                    <div><strong>连续</strong><small>额度内立即上传</small></div>
                   </div>
-                  <p className="panel-note">失败请求也计入本地额度。无 Token 单图上限 10 MB，保存 Token 后为 50 MB；限制会在前端和 Rust 后端同时校验。队列任务绑定添加时的账号。</p>
+                  <p className="panel-note">不再对每张图片设置固定秒级等待。失败请求仍计入本地小时额度；无 Token 单图上限 10 MB，保存 Token 后为 50 MB。超出当前额度的队列任务会自动安排到下一窗口。</p>
                 </div>
 
                 <div className="panel settings-panel cache-panel">

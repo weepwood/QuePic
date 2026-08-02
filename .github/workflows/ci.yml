@@ -11,47 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply_changes:
-    name: Apply queued source update
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Apply burst upload and document UI update
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f .github/trigger-burst-upload-ui ]; then
-            echo "No queued source update."
-            exit 0
-          fi
-          python3 <<'PY'
-          from pathlib import Path
-
-          workflow = Path('.github/workflows/apply-burst-upload-ui.yml').read_text(encoding='utf-8')
-          marker = "          python3 <<'PY'\n"
-          start = workflow.index(marker) + len(marker)
-          end = workflow.index("\n          PY\n", start)
-          lines = workflow[start:end].splitlines()
-          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
-          Path('/tmp/apply-burst-upload-ui.py').write_text(script, encoding='utf-8')
-          PY
-          python3 /tmp/apply-burst-upload-ui.py
-          git fetch -q --depth=1 origin main
-          git show FETCH_HEAD:.github/workflows/ci.yml > .github/workflows/ci.yml
-          rm -f .github/trigger-burst-upload-ui .github/workflows/apply-burst-upload-ui.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: 优化小时批量上传与文件夹文档布局"
-          git push origin HEAD:${{ github.head_ref }}
-
   frontend:
     name: React frontend
     runs-on: ubuntu-latest

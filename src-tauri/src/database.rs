@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub const UPLOAD_HOURLY_LIMIT: i64 = 140;
-pub const UPLOAD_MINIMUM_INTERVAL_SECONDS: i64 = 25;
+pub const UPLOAD_MINIMUM_INTERVAL_SECONDS: i64 = 0;
 const DEFAULT_CATEGORY: &str = "未分类";
 
 pub fn initialize(path: &Path) -> Result<(), String> {
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_upload_quota_and_spacing() {
+    fn reports_hourly_quota_without_per_image_spacing() {
         let path = temporary_database();
         initialize(&path).unwrap();
         let before = upload_quota_status(&path, "default").unwrap();
@@ -627,7 +627,8 @@ mod tests {
         mark_upload_attempt_success(&path, id).unwrap();
         let after = upload_quota_status(&path, "default").unwrap();
         assert_eq!(after.used, 1);
-        assert!(after.retry_after_seconds > 0);
+        assert_eq!(after.retry_after_seconds, 0);
+        assert_eq!(after.minimum_interval_seconds, 0);
         cleanup_database(&path);
     }
 }

@@ -250,8 +250,9 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
         const upload = await uploadImage(file, accountName, null, null, folderName);
         uploaded.push({ file, url: upload.asset.remote_url });
         uploadedCount += 1;
-        setQuota(await getUploadQuotaStatus(accountName));
       }
+
+      setQuota(await getUploadQuotaStatus(accountName));
 
       const markdown = uploaded
         .map(({ file, url }) => `![${escapeMarkdownAlt(pathInsideFolder(file))}](${url})`)
@@ -295,7 +296,7 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
           <div>
             <span>FOLDER TO YUQUE</span>
             <h2>文件夹转语雀文档</h2>
-            <p>粘贴语雀网页 URL 自动识别知识库；可以新建同名文档，也可以追加到现有文档。</p>
+            <p>先选择知识库和文档，再选择图片文件夹；当前小时额度内会连续完成上传。</p>
           </div>
           <BookOpen size={22} />
         </div>
@@ -401,8 +402,8 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
         <div className="quota-note">
           <Gauge size={18} />
           <div>
-            <strong>图片库与安全限速</strong>
-            <small>每张图片上传成功后立即写入当前账号图片库，并按文件夹名分类；重复图片复用历史链接，不消耗远程上传额度。</small>
+            <strong>图片库与批量上传</strong>
+            <small>当前小时剩余额度内连续处理，不再为每张图片强制等待；上传成功后立即写入图片库并按文件夹名分类，重复图片复用历史链接。</small>
           </div>
         </div>
 

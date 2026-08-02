@@ -14,7 +14,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use chrono::Utc;
@@ -384,10 +383,6 @@ async fn upload_image(
             quota.limit
         ));
     }
-    if quota.retry_after_seconds > 0 {
-        tokio::time::sleep(Duration::from_secs(quota.retry_after_seconds as u64)).await;
-    }
-
     let attempt_id = database::record_upload_attempt(&database_path, &account_name)?;
     let file_size = input.bytes.len() as i64;
     let remote_url = yuque::upload(
