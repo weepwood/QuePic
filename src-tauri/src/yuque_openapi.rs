@@ -28,6 +28,8 @@ pub struct SaveYuqueDocumentInput {
     pub document_url: Option<String>,
     pub title: String,
     pub body: String,
+    #[serde(default)]
+    pub ensure_in_toc: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +137,20 @@ struct YuqueDocument {
 struct YuqueBook {
     id: Option<i64>,
     namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct YuqueTocNode {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    doc_id: Option<i64>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    children: Vec<YuqueTocNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,11 +372,75 @@ pub async fn create_yuque_document(
             &merged_body,
         )
         .await?;
+        if input.ensure_in_toc {
+            ensure_document_in_toc(&client, &token, repo.id, &updated).await?;
+        }
         return Ok(document_result(updated, &namespace, false));
     }
 
     let created = create_document(&client, &token, repo.id, title, body).await?;
+    if input.ensure_in_toc {
+        ensure_document_in_toc(&client, &token, repo.id, &created).await?;
+    }
     Ok(document_result(created, &namespace, true))
+}
+
+async fn ensure_document_in_toc(
+    client: &Client,
+    token: &str,
+    repository_id: i64,
+    document: &YuqueDocument,
+) -> Result<(), String> {
+    let endpoint = format!("{YUQUE_API_BASE}/repos/{repository_id}/toc");
+    let text = request_text(
+        client
+            .get(&endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("读取语雀目录失败：{error}"))?,
+        "读取语雀目录",
+    )
+    .await?;
+    let nodes = serde_json::from_str::<YuqueApiResponse<Vec<YuqueTocNode>>>(&text)
+        .map(|payload| payload.data)
+        .map_err(|error| format!("解析语雀目录失败：{error}"))?;
+    if toc_contains_document(&nodes, document) {
+        return Ok(());
+    }
+
+    request_text(
+        client
+            .post(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .json(&json!({
+                "action": "appendNode",
+                "action_mode": "child",
+                "target_uuid": "",
+                "type": "DOC",
+                "title": document.title,
+                "doc_id": document.id,
+                "url": document.slug,
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("将语雀文档插入目录失败：{error}"))?,
+        "将语雀文档插入目录",
+    )
+    .await?;
+    Ok(())
+}
+
+fn toc_contains_document(nodes: &[YuqueTocNode], document: &YuqueDocument) -> bool {
+    nodes.iter().any(|node| {
+        node.doc_id == Some(document.id)
+            || node.id == Some(document.id)
+            || node.url.as_deref() == Some(document.slug.as_str())
+            || node.slug.as_deref() == Some(document.slug.as_str())
+            || toc_contains_document(&node.children, document)
+    })
 }
 
 async fn fetch_current_user(client: &Client, token: &str) -> Result<YuqueUser, String> {

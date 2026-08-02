@@ -185,6 +185,7 @@ async function createQueueItem(file: File, accountName: string, category: string
     ...preview,
     accountName,
     category,
+    tags: [],
     createdAt: Date.now(),
     scheduledAt: null,
     status: 'waiting',
@@ -685,7 +686,7 @@ export default function App() {
 
     markQueueItem(id, { status: 'uploading', scheduledAt: null, error: undefined });
     try {
-      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);
+      const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category, item.tags || []);
       markQueueItem(id, { status: 'success', result, scheduledAt: null, error: undefined });
       await removeStoredQueueItem(id);
       if (!deferRefresh) {

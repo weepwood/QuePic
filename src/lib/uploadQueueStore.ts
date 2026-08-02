@@ -79,6 +79,7 @@ export function toStoredQueueItem(item: UploadQueueItem): StoredUploadQueueItem 
     height: item.height,
     accountName: item.accountName,
     category: item.category,
+    tags: item.tags,
     createdAt: item.createdAt,
     scheduledAt: item.scheduledAt,
     status,

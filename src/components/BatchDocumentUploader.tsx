@@ -247,7 +247,7 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
           total: files.length,
           fileName: pathInsideFolder(file),
         });
-        const upload = await uploadImage(file, accountName, null, null, folderName);
+        const upload = await uploadImage(file, accountName, null, null, folderName, []);
         uploaded.push({ file, url: upload.asset.remote_url });
         uploadedCount += 1;
       }

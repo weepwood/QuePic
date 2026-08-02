@@ -1,17 +1,18 @@
 use std::{
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::Utc;
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage};
 
-const DISPLAY_EDGE: u32 = 1_600;
-const REMOTE_PREVIEW_EDGE: u32 = 640;
-const DISPLAY_JPEG_QUALITY: u8 = 80;
-const REMOTE_PREVIEW_JPEG_QUALITY: u8 = 76;
+const DISPLAY_EDGE: u32 = 2_400;
+const REMOTE_PREVIEW_EDGE: u32 = 720;
+const DISPLAY_JPEG_QUALITY: u8 = 82;
+const REMOTE_PREVIEW_JPEG_QUALITY: u8 = 72;
+const DISPLAY_CACHE_MAX_BYTES: usize = 820_000;
+const THUMBNAIL_CACHE_MAX_BYTES: usize = 160_000;
 
 #[derive(Debug, Clone)]
 pub struct CachedPreview {
@@ -24,34 +25,36 @@ pub struct CachedPreview {
 pub fn cache_image(
     cache_root: &Path,
     sha256: &str,
-    mime_type: &str,
+    _mime_type: &str,
     bytes: &[u8],
 ) -> Result<CachedPreview, String> {
     validate_cache_input(sha256, bytes)?;
     let asset_dir = asset_cache_dir(cache_root, sha256)?;
     fs::create_dir_all(&asset_dir).map_err(|error| format!("无法创建图片缓存目录：{error}"))?;
+    let image = image::load_from_memory(bytes)
+        .map_err(|error| format!("无法解码图片以生成压缩缓存：{error}"))?;
+    let display_path = encode_resized_image(
+        &image,
+        DISPLAY_EDGE,
+        DISPLAY_JPEG_QUALITY,
+        DISPLAY_CACHE_MAX_BYTES,
+        &asset_dir,
+        "original",
+    )?;
+    let thumbnail_path = encode_resized_image(
+        &image,
+        REMOTE_PREVIEW_EDGE,
+        REMOTE_PREVIEW_JPEG_QUALITY,
+        THUMBNAIL_CACHE_MAX_BYTES,
+        &asset_dir,
+        "preview",
+    )?;
 
-    let original_path = asset_dir.join(format!("original.{}", extension_for_mime(mime_type)));
-    write_atomic(&original_path, bytes)?;
-    let display_path = image::load_from_memory(bytes)
-        .ok()
-        .and_then(|image| {
-            encode_resized_image(
-                &image,
-                DISPLAY_EDGE,
-                DISPLAY_JPEG_QUALITY,
-                &asset_dir,
-                "preview",
-            )
-            .ok()
-        })
-        .unwrap_or_else(|| original_path.clone());
-
-    cleanup_stale_files(&asset_dir, &[&original_path, &display_path]);
-    let cache_bytes = combined_file_size(Some(&original_path), Some(&display_path))?;
+    cleanup_stale_files(&asset_dir, &[&display_path, &thumbnail_path]);
+    let cache_bytes = combined_file_size(Some(&display_path), Some(&thumbnail_path))?;
     Ok(CachedPreview {
-        original_path: Some(path_to_string(&original_path)),
-        thumbnail_path: Some(path_to_string(&display_path)),
+        original_path: Some(path_to_string(&display_path)),
+        thumbnail_path: Some(path_to_string(&thumbnail_path)),
         cache_bytes,
         cached_at: Utc::now().to_rfc3339(),
     })
@@ -72,13 +75,19 @@ pub fn cache_thumbnail(
             &image,
             REMOTE_PREVIEW_EDGE,
             REMOTE_PREVIEW_JPEG_QUALITY,
+            THUMBNAIL_CACHE_MAX_BYTES,
             &asset_dir,
             "preview",
         )?,
-        Err(_) => {
+        Err(_) if bytes.len() <= THUMBNAIL_CACHE_MAX_BYTES => {
             let path = asset_dir.join(format!("preview.{}", extension_for_mime(mime_type)));
             write_atomic(&path, bytes)?;
             path
+        }
+        Err(error) => {
+            return Err(format!(
+                "无法解码图片缓存，且源文件超过缩略图缓存上限：{error}"
+            ));
         }
     };
     cleanup_stale_preview_files(&asset_dir, &thumbnail_path);
@@ -137,25 +146,30 @@ fn encode_resized_image(
     image: &DynamicImage,
     max_edge: u32,
     jpeg_quality: u8,
+    max_bytes: usize,
     asset_dir: &Path,
     stem: &str,
 ) -> Result<PathBuf, String> {
-    let resized = image.thumbnail(max_edge, max_edge);
-    let (extension, encoded) = if resized.color().has_alpha() {
-        let mut output = Cursor::new(Vec::new());
-        resized
-            .write_to(&mut output, ImageFormat::WebP)
-            .map_err(|error| format!("无法编码透明图片缓存：{error}"))?;
-        ("webp", output.into_inner())
-    } else {
+    let mut edge = max_edge.max(320);
+    let mut quality = jpeg_quality.max(38);
+    let encoded = loop {
+        let resized = image.thumbnail(edge, edge).to_rgb8();
         let mut output = Vec::new();
-        JpegEncoder::new_with_quality(&mut output, jpeg_quality)
-            .encode_image(&resized)
+        JpegEncoder::new_with_quality(&mut output, quality)
+            .encode_image(&DynamicImage::ImageRgb8(resized))
             .map_err(|error| format!("无法编码 JPEG 图片缓存：{error}"))?;
-        ("jpg", output)
+        if output.len() <= max_bytes || edge <= 320 {
+            break output;
+        }
+        if quality > 52 {
+            quality = quality.saturating_sub(8);
+        } else {
+            edge = (edge.saturating_mul(3) / 4).max(320);
+            quality = jpeg_quality.min(72);
+        }
     };
 
-    let target = asset_dir.join(format!("{stem}.{extension}"));
+    let target = asset_dir.join(format!("{stem}.jpg"));
     write_atomic(&target, &encoded)?;
     Ok(target)
 }
@@ -311,16 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn preserves_exact_original_and_builds_display_preview() {
+    fn builds_bounded_display_and_thumbnail_cache() {
         let root = temp_root("original");
         let source = encoded_png(2_400, 1_600);
         let cached = cache_image(&root, &"b".repeat(64), "image/png", &source).unwrap();
         let original = cached.original_path.as_deref().unwrap();
         let preview = cached.thumbnail_path.as_deref().unwrap();
-        assert!(original.ends_with("original.png"));
-        assert_eq!(fs::read(original).unwrap(), source);
-        assert!(image::open(preview).unwrap().dimensions().0 <= DISPLAY_EDGE);
-        assert!(image::open(preview).unwrap().dimensions().1 <= DISPLAY_EDGE);
+        assert!(original.ends_with("original.jpg"));
+        assert!(fs::metadata(original).unwrap().len() <= DISPLAY_CACHE_MAX_BYTES as u64);
+        assert!(fs::metadata(preview).unwrap().len() <= THUMBNAIL_CACHE_MAX_BYTES as u64);
+        assert!(cached.cache_bytes <= (DISPLAY_CACHE_MAX_BYTES + THUMBNAIL_CACHE_MAX_BYTES) as i64);
+        assert!(image::open(preview).unwrap().dimensions().0 <= REMOTE_PREVIEW_EDGE);
+        assert!(image::open(preview).unwrap().dimensions().1 <= REMOTE_PREVIEW_EDGE);
         assert!(original_exists(Some(original)));
         let _ = fs::remove_dir_all(root);
     }

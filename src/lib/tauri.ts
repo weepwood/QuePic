@@ -118,8 +118,28 @@ function resolveImageMimeType(file: File): string {
   return extension ? mimeTypes[extension] || 'application/octet-stream' : 'application/octet-stream';
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  return invoke('open_external_url', { url });
+}
+
 export async function listAssets(): Promise<AssetRecord[]> {
   return invoke<AssetRecord[]>('list_assets');
+}
+
+export async function listLibraryFolders(): Promise<string[]> {
+  return invoke<string[]>('list_library_folders');
+}
+
+export async function createLibraryFolder(name: string): Promise<string> {
+  return invoke<string>('create_library_folder', { name });
+}
+
+export async function listAssetTags(): Promise<string[]> {
+  return invoke<string[]>('list_asset_tags');
+}
+
+export async function updateAssetTags(id: number, tags: string[]): Promise<AssetRecord> {
+  return invoke<AssetRecord>('update_asset_tags', { id, tags });
 }
 
 export async function deleteAsset(id: number): Promise<void> {
@@ -206,6 +226,7 @@ export async function uploadImage(
   width: number | null,
   height: number | null,
   category: string,
+  tags: string[],
 ): Promise<UploadResult> {
   const context = getStoredUploadContext(accountName);
   if (!context) {
@@ -224,6 +245,7 @@ export async function uploadImage(
       height,
       account_name: accountName,
       category,
+      tags,
       attachable_id: context.attachable_id,
       referer_url: context.document_url,
     },
@@ -271,7 +293,8 @@ async function resolveDailyImageDocument(
         knowledge_base_url: repository.url,
         document_url: null,
         title,
-        body: `# ${title}\n\n> QuePic 每日图片记录`,
+        body: '> QuePic 每日图片记录',
+        ensure_in_toc: true,
       });
 
   if (!document.url) throw new Error('当天语雀文档没有可用 URL。');
@@ -327,5 +350,6 @@ export async function appendImagesToDailyDocument(
     document_url: document.url,
     title: document.title,
     body,
+    ensure_in_toc: true,
   });
 }

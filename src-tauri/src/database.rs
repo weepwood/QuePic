@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -49,9 +50,21 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                 FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS library_folders (
+                name TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS asset_categories (
                 asset_id INTEGER PRIMARY KEY,
                 category TEXT NOT NULL DEFAULT '未分类',
+                FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS asset_tags (
+                asset_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY(asset_id, tag),
                 FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
             );
 
@@ -66,6 +79,22 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     migrate_asset_hash_scope(&mut connection)?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO library_folders (name, created_at) VALUES (?1, ?2)",
+            params![DEFAULT_CATEGORY, Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO library_folders (name, created_at)
+            SELECT DISTINCT category, ?1 FROM asset_categories
+            WHERE TRIM(category) <> ''
+            "#,
+            [Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
 
     connection
         .execute_batch(
@@ -84,6 +113,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_asset_categories_category
             ON asset_categories(category);
+
+            CREATE INDEX IF NOT EXISTS idx_asset_tags_tag
+            ON asset_tags(tag);
 
             CREATE INDEX IF NOT EXISTS idx_upload_attempts_account_time
             ON upload_attempts(account_name, attempted_at DESC);
@@ -126,10 +158,14 @@ where
 {
     let connection = open_connection(path)?;
     let sql = format!("{} {clause}", asset_select());
-    connection
+    let mut asset = connection
         .query_row(&sql, parameters, map_asset)
         .optional()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Some(asset) = asset.as_mut() {
+        asset.tags = load_asset_tags(&connection, asset.id)?;
+    }
+    Ok(asset)
 }
 
 pub fn insert_asset(path: &Path, asset: &AssetRecord) -> Result<AssetRecord, String> {
@@ -160,31 +196,131 @@ pub fn insert_asset(path: &Path, asset: &AssetRecord) -> Result<AssetRecord, Str
         .map_err(|error| error.to_string())?;
 
     let id = transaction.last_insert_rowid();
+    let category = normalized_category(&asset.category);
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO library_folders (name, created_at) VALUES (?1, ?2)",
+            params![&category, Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "INSERT INTO asset_categories (asset_id, category) VALUES (?1, ?2)",
-            params![id, normalized_category(&asset.category)],
+            params![id, &category],
         )
         .map_err(|error| error.to_string())?;
+    for tag in normalized_tags(&asset.tags)? {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag) VALUES (?1, ?2)",
+                params![id, tag],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     transaction.commit().map_err(|error| error.to_string())?;
     find_by_id(path, id)?.ok_or_else(|| "保存图片索引后无法重新读取记录。".into())
 }
 
 pub fn update_asset_category(path: &Path, id: i64, category: &str) -> Result<AssetRecord, String> {
-    let connection = open_connection(path)?;
-    let changed = connection
+    let mut connection = open_connection(path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE id = ?1)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("图片记录不存在。".into());
+    }
+    let category = normalized_category(category);
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO library_folders (name, created_at) VALUES (?1, ?2)",
+            params![&category, Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
         .execute(
             r#"
             INSERT INTO asset_categories (asset_id, category) VALUES (?1, ?2)
             ON CONFLICT(asset_id) DO UPDATE SET category = excluded.category
             "#,
-            params![id, normalized_category(category)],
+            params![id, category],
         )
         .map_err(|error| error.to_string())?;
-    if changed == 0 || find_by_id(path, id)?.is_none() {
+    transaction.commit().map_err(|error| error.to_string())?;
+    find_by_id(path, id)?.ok_or_else(|| "更新图片文件夹后无法重新读取记录。".into())
+}
+
+pub fn list_library_folders(path: &Path) -> Result<Vec<String>, String> {
+    let connection = open_connection(path)?;
+    let mut statement = connection
+        .prepare("SELECT name FROM library_folders ORDER BY CASE WHEN name = '未分类' THEN 0 ELSE 1 END, name COLLATE NOCASE")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+pub fn create_library_folder(path: &Path, name: &str) -> Result<String, String> {
+    let name = normalized_folder(name)?;
+    let connection = open_connection(path)?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO library_folders (name, created_at) VALUES (?1, ?2)",
+            params![&name, Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(name)
+}
+
+pub fn list_asset_tags(path: &Path) -> Result<Vec<String>, String> {
+    let connection = open_connection(path)?;
+    let mut statement = connection
+        .prepare("SELECT DISTINCT tag FROM asset_tags ORDER BY tag COLLATE NOCASE")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+pub fn update_asset_tags(path: &Path, id: i64, tags: &[String]) -> Result<AssetRecord, String> {
+    let tags = normalized_tags(tags)?;
+    let mut connection = open_connection(path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE id = ?1)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
         return Err("图片记录不存在。".into());
     }
-    find_by_id(path, id)?.ok_or_else(|| "更新图片分类后无法重新读取记录。".into())
+    transaction
+        .execute("DELETE FROM asset_tags WHERE asset_id = ?1", [id])
+        .map_err(|error| error.to_string())?;
+    for tag in tags {
+        transaction
+            .execute(
+                "INSERT INTO asset_tags (asset_id, tag) VALUES (?1, ?2)",
+                params![id, tag],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    find_by_id(path, id)?.ok_or_else(|| "更新图片标签后无法重新读取记录。".into())
 }
 
 pub fn upsert_cached_preview(
@@ -293,8 +429,12 @@ pub fn list_assets(path: &Path) -> Result<Vec<AssetRecord>, String> {
     let rows = statement
         .query_map([], map_asset)
         .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())
+    let mut assets = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    hydrate_asset_tags(&connection, &mut assets)?;
+    Ok(assets)
 }
 
 pub fn delete_asset(path: &Path, id: i64) -> Result<(), String> {
@@ -551,6 +691,7 @@ fn map_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
         account_name: row.get(8)?,
         uploaded_at: row.get(9)?,
         category: row.get(10)?,
+        tags: Vec::new(),
         original_path: row.get(11)?,
         thumbnail_path: row.get(12)?,
         preview_source: row.get(13)?,
@@ -568,6 +709,71 @@ fn normalized_category(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn normalized_folder(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("文件夹名称不能为空。".into());
+    }
+    if value.chars().count() > 64 || value.chars().any(char::is_control) {
+        return Err("文件夹名称无效或超过 64 个字符。".into());
+    }
+    Ok(value.to_string())
+}
+
+fn normalized_tags(values: &[String]) -> Result<Vec<String>, String> {
+    let mut tags = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if value.chars().count() > 48 || value.chars().any(char::is_control) {
+            return Err("标签名称无效或超过 48 个字符。".into());
+        }
+        if !tags.iter().any(|existing| existing == value) {
+            tags.push(value.to_string());
+        }
+    }
+    if tags.len() > 20 {
+        return Err("每张图片最多设置 20 个标签。".into());
+    }
+    Ok(tags)
+}
+
+fn load_asset_tags(connection: &Connection, asset_id: i64) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT tag FROM asset_tags WHERE asset_id = ?1 ORDER BY tag COLLATE NOCASE")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([asset_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn hydrate_asset_tags(connection: &Connection, assets: &mut [AssetRecord]) -> Result<(), String> {
+    if assets.is_empty() {
+        return Ok(());
+    }
+    let mut statement = connection
+        .prepare("SELECT asset_id, tag FROM asset_tags ORDER BY tag COLLATE NOCASE")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut tags_by_asset: HashMap<i64, Vec<String>> = HashMap::new();
+    for row in rows {
+        let (asset_id, tag) = row.map_err(|error| error.to_string())?;
+        tags_by_asset.entry(asset_id).or_default().push(tag);
+    }
+    for asset in assets {
+        asset.tags = tags_by_asset.remove(&asset.id).unwrap_or_default();
+    }
+    Ok(())
 }
 
 fn unix_timestamp() -> i64 {
@@ -602,6 +808,7 @@ mod tests {
             account_name: account_name.into(),
             uploaded_at: "2026-07-27T00:00:00Z".into(),
             category: "测试".into(),
+            tags: vec!["演示".into()],
             original_path: None,
             thumbnail_path: None,
             preview_source: "missing".into(),
