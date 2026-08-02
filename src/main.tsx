@@ -10,7 +10,7 @@ import './feature-enhancements.css';
 import './queue-library.css';
 import './account-backup.css';
 import './ui-polish.css';
-// 原图查看器与图库比例规则需要在通用视觉修正之后加载。
+// 原图查看器、图库比例和自动上下文提示需要在通用视觉修正之后加载。
 import './original-viewer.css';
 
 createRoot(document.getElementById('root')!).render(
