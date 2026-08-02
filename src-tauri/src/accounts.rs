@@ -57,12 +57,16 @@ pub fn save_account_profile(
 }
 
 pub fn import_account_names(path: &Path, account_names: &[String]) -> Result<(), String> {
-    let connection = open_connection(path)?;
-    for account_name in account_names {
-        let account_name = normalize_account_name(account_name)?;
-        upsert_name(&connection, &account_name)?;
+    let normalized = account_names
+        .iter()
+        .map(|account_name| normalize_account_name(account_name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut connection = open_connection(path)?;
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    for account_name in normalized {
+        upsert_name(&transaction, &account_name)?;
     }
-    Ok(())
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 pub fn account_names(path: &Path) -> Result<Vec<String>, String> {
@@ -167,22 +171,40 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
 mod tests {
     use super::{account_names, import_account_names, initialize};
     use crate::database;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{path::Path, time::{SystemTime, UNIX_EPOCH}};
 
-    #[test]
-    fn stores_multiple_account_names() {
+    fn temporary_database(label: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("quepic-accounts-{unique}.sqlite"));
-        database::initialize(&path).unwrap();
-        initialize(&path).unwrap();
+        std::env::temp_dir().join(format!("quepic-accounts-{label}-{unique}.sqlite"))
+    }
+
+    fn initialize_database(path: &Path) {
+        database::initialize(path).unwrap();
+        initialize(path).unwrap();
+    }
+
+    #[test]
+    fn stores_multiple_account_names() {
+        let path = temporary_database("multiple");
+        initialize_database(&path);
         import_account_names(&path, &["工作".into(), "个人".into()]).unwrap();
         let names = account_names(&path).unwrap();
         assert!(names.contains(&"default".to_string()));
         assert!(names.contains(&"工作".to_string()));
         assert!(names.contains(&"个人".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_invalid_account_list_without_partial_import() {
+        let path = temporary_database("atomic");
+        initialize_database(&path);
+        let result = import_account_names(&path, &["有效账号".into(), "无效\n账号".into()]);
+        assert!(result.is_err());
+        assert!(!account_names(&path).unwrap().contains(&"有效账号".to_string()));
         let _ = std::fs::remove_file(path);
     }
 }
