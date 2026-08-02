@@ -608,22 +608,22 @@ fn shared_cache_stats(path: &Path) -> Result<CacheStats, String> {
 }
 
 fn existing_local_path(asset: &AssetRecord, prefer_original: bool) -> Option<String> {
-    let candidates = if prefer_original {
-        [
-            asset.original_path.as_deref(),
-            asset.thumbnail_path.as_deref(),
-        ]
-    } else {
-        [
-            asset.thumbnail_path.as_deref(),
-            asset.original_path.as_deref(),
-        ]
-    };
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|path| Path::new(path).is_file())
-        .map(ToOwned::to_owned)
+    if prefer_original {
+        return asset
+            .original_path
+            .as_deref()
+            .filter(|path| Path::new(path).is_file())
+            .map(ToOwned::to_owned);
+    }
+
+    [
+        asset.thumbnail_path.as_deref(),
+        asset.original_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| Path::new(path).is_file())
+    .map(ToOwned::to_owned)
 }
 
 fn local_preview_result(asset_id: i64, path: String, source: &str) -> PreviewResult {
