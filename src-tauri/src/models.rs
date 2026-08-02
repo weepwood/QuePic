@@ -34,8 +34,10 @@ pub struct UploadInput {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub attachable_id: i64,
-    pub referer_url: String,
+    #[serde(default)]
+    pub attachable_id: Option<i64>,
+    #[serde(default)]
+    pub referer_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
