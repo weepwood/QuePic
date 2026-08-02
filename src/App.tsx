@@ -85,7 +85,8 @@ import type {
 const DEFAULT_ACCOUNT = 'default';
 const DEFAULT_CATEGORY = '未分类';
 const EMPTY_CACHE_STATS: CacheStats = { asset_count: 0, cached_count: 0, cache_bytes: 0 };
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const NO_TOKEN_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const TOKEN_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const QUEUE_PREVIEW_EDGE = 160;
 const QUEUE_PREVIEW_CONCURRENCY = 3;
 const AUTO_UPLOAD_DELAY_MS = 60 * 60 * 1000;
@@ -470,6 +471,8 @@ export default function App() {
     .filter((item) => item.status === 'scheduled' && item.scheduledAt)
     .reduce<number | null>((earliest, item) => earliest === null ? item.scheduledAt : Math.min(earliest, item.scheduledAt || earliest), null);
   const quotaAvailable = !quota || quota.remaining > 0;
+  const maxUploadBytes = tokenReady ? TOKEN_MAX_UPLOAD_BYTES : NO_TOKEN_MAX_UPLOAD_BYTES;
+  const maxUploadMegabytes = maxUploadBytes / 1024 / 1024;
   const cachePercent = cacheStats.asset_count > 0
     ? Math.round((cacheStats.cached_count / cacheStats.asset_count) * 100)
     : 0;
@@ -554,14 +557,14 @@ export default function App() {
 
   const handleSaveUploadContext = async () => {
     if (!uploadContextInput.trim()) return;
-    if (!tokenReady) return showToast('error', '请先为当前账号保存 OpenAPI Token。');
+    if (!credentialReady) return showToast('error', '请先为当前账号登录语雀并保存会话。');
     setUploadContextBusy(true);
     try {
         const context = await resolveUploadContext(accountName, uploadContextInput.trim());
         saveStoredUploadContext(context);
         setUploadContext(context);
         setUploadContextInput(context.document_url);
-        showToast('success', `上传上下文已绑定到文档“${context.title}”。`);
+        showToast('success', `上传上下文已绑定到文档“${context.title}”（${context.source === 'openapi' ? 'OpenAPI' : '登录会话'}验证）。`);
     } catch (error) {
         showToast('error', normalizeError(error));
     } finally {
@@ -611,8 +614,10 @@ export default function App() {
   };
 
   const addFiles = async (files: File[]) => {
-    const accepted = files.filter((file) => isImageFile(file) && file.size > 0 && file.size <= MAX_UPLOAD_BYTES);
-    if (accepted.length !== files.length) showToast('error', '已忽略非图片、空文件或超过 50 MB 的图片。');
+    const accepted = files.filter((file) => isImageFile(file) && file.size > 0 && file.size <= maxUploadBytes);
+    if (accepted.length !== files.length) {
+      showToast('error', `已忽略非图片、空文件或超过 ${maxUploadMegabytes} MB 的图片。${tokenReady ? '' : ' 保存 OpenAPI Token 后可上传 50 MB 图片。'}`);
+    }
     if (accepted.length === 0) return;
     const account = activeAccountRef.current;
     const category = uploadCategory.trim() || DEFAULT_CATEGORY;
@@ -958,7 +963,7 @@ export default function App() {
                   <input value={uploadCategory} onChange={(event) => setUploadCategory(event.target.value)} placeholder="上传分类" list="category-options" />
                 </label>
                 <datalist id="category-options">{categories.map((category) => <option value={category} key={category} />)}</datalist>
-                <div className="drop-hints"><span>单张 50 MB</span><span>140 张/小时</span><span>队列持久化</span></div>
+                <div className="drop-hints"><span>单张 {maxUploadMegabytes} MB</span><span>{tokenReady ? 'Token 增强模式' : '无 Token 基础模式'}</span><span>140 张/小时</span><span>队列持久化</span></div>
                 <div className="actions">
                   <button className="button primary" disabled={!queueReady} onClick={() => fileInputRef.current?.click()}><FileImage size={17} />选择图片</button>
                   <button className="button secondary" disabled={!queueReady} onClick={async () => {
@@ -1143,7 +1148,7 @@ export default function App() {
                 </div>
 
                 <div className="panel settings-panel token-panel">
-                  <div className="panel-heading"><div><span>YUQUE OPENAPI</span><h2>OpenAPI Token</h2><p>用于“文件夹转文档”，按当前账号保存到系统密钥库。</p></div><div className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{tokenReady ? '已保存' : '未配置'}</div></div>
+                  <div className="panel-heading"><div><span>YUQUE OPENAPI</span><h2>OpenAPI Token</h2><p>用于读取和管理知识库、创建文件夹文档，并将单图上限从 10 MB 提升到 50 MB。</p></div><div className={tokenReady ? 'status ready-status' : 'status'}>{tokenReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{tokenReady ? '50 MB 模式' : '10 MB 模式'}</div></div>
                   <label className="field"><span>Token</span><input type="password" autoComplete="off" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder={tokenReady ? '输入新 Token 可覆盖现有配置' : '粘贴语雀 OpenAPI Token'} /><small>Token 不写入 localStorage、SQLite 或前端配置文件。</small></label>
                   <div className="actions">
                     <button className="button primary" disabled={tokenBusy || !tokenInput.trim()} onClick={() => void handleSaveToken()}>{tokenBusy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}安全保存 Token</button>
@@ -1152,11 +1157,11 @@ export default function App() {
                 </div>
 
                 <div className="panel settings-panel upload-context-panel">
-                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>每个账号绑定自己有权限的语雀文档，避免多个账号共用固定文档 ID 导致上传失败。</p></div><ExternalLink size={20} /></div>
-                <label className="field"><span>语雀文档 URL</span><input type="url" value={uploadContextInput} onChange={(event) => setUploadContextInput(event.target.value)} placeholder="https://www.yuque.com/账号/知识库/文档" /><small>使用当前账号的 OpenAPI Token 验证文档并解析数字 ID；本地只保存文档 URL、ID 和标题。</small></label>
+                <div className="panel-heading"><div><span>UPLOAD CONTEXT</span><h2>上传上下文文档</h2><p>每个账号绑定自己有权限的语雀文档，作为图片上传的文档上下文。</p></div><ExternalLink size={20} /></div>
+                <label className="field"><span>语雀文档 URL</span><input type="url" value={uploadContextInput} onChange={(event) => setUploadContextInput(event.target.value)} placeholder="https://www.yuque.com/账号/知识库/文档" /><small>{tokenReady ? '使用 OpenAPI Token 验证并解析文档 ID。' : '未配置 Token 时，使用当前登录会话读取文档页面并解析 ID。'}本地只保存文档 URL、ID 和标题。</small></label>
                 {uploadContext && <p className="panel-note">已绑定：{uploadContext.title} · 文档 ID {uploadContext.attachable_id}</p>}
                 <div className="actions">
-                  <button className="button primary" disabled={uploadContextBusy || !tokenReady || !uploadContextInput.trim()} onClick={() => void handleSaveUploadContext()}>{uploadContextBusy ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并保存</button>
+                  <button className="button primary" disabled={uploadContextBusy || !credentialReady || !uploadContextInput.trim()} onClick={() => void handleSaveUploadContext()}>{uploadContextBusy ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并保存</button>
                   <button className="button danger" disabled={uploadContextBusy || !uploadContext} onClick={handleClearUploadContext}><Trash2 size={17} />清除上下文</button>
                 </div>
               </div>
@@ -1168,7 +1173,7 @@ export default function App() {
                     <div><strong>{quota?.remaining ?? 140}</strong><small>剩余额度</small></div>
                     <div><strong>{quota?.minimum_interval_seconds ?? 25}s</strong><small>最小间隔</small></div>
                   </div>
-                  <p className="panel-note">失败请求也计入本地额度。队列任务绑定添加时的账号；应用运行时到点执行，应用关闭后会在下次启动补传。</p>
+                  <p className="panel-note">失败请求也计入本地额度。无 Token 单图上限 10 MB，保存 Token 后为 50 MB；限制会在前端和 Rust 后端同时校验。队列任务绑定添加时的账号。</p>
                 </div>
 
                 <div className="panel settings-panel cache-panel">

@@ -12,7 +12,10 @@ pub fn save_openapi_token(account_name: String, token: String) -> Result<Credent
     entry(&account_name)?
         .set_password(token)
         .map_err(|error| format!("无法写入系统密钥库中的 OpenAPI Token：{error}"))?;
-    Ok(CredentialStatus { configured: true, account_name })
+    Ok(CredentialStatus {
+        configured: true,
+        account_name,
+    })
 }
 
 #[tauri::command]
@@ -23,7 +26,10 @@ pub fn openapi_token_status(account_name: String) -> Result<CredentialStatus, St
         Err(Error::NoEntry) => false,
         Err(error) => return Err(format!("无法读取系统密钥库中的 OpenAPI Token：{error}")),
     };
-    Ok(CredentialStatus { configured, account_name })
+    Ok(CredentialStatus {
+        configured,
+        account_name,
+    })
 }
 
 #[tauri::command]

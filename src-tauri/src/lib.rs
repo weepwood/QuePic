@@ -27,7 +27,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
-const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
+const NO_TOKEN_MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const TOKEN_MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const YUQUE_LOGIN_WINDOW: &str = "yuque-login";
 const YUQUE_LOGIN_URL: &str = "https://www.yuque.com/login";
 const YUQUE_UPLOAD_URL: &str = "https://www.yuque.com/api/upload/attach";
@@ -57,21 +58,32 @@ struct AppState {
 fn save_cookie(account_name: String, cookie: String) -> Result<CredentialStatus, String> {
     let account_name = normalize_account_name(&account_name)?;
     credentials::save(&account_name, &cookie)?;
-    Ok(CredentialStatus { configured: true, account_name })
+    Ok(CredentialStatus {
+        configured: true,
+        account_name,
+    })
 }
 
 #[tauri::command]
 async fn open_yuque_login(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(YUQUE_LOGIN_WINDOW) {
-        window.show().map_err(|error| format!("无法显示语雀登录窗口：{error}"))?;
-        window.set_focus().map_err(|error| format!("无法聚焦语雀登录窗口：{error}"))?;
         window
-            .navigate(Url::parse(YUQUE_LOGIN_URL).map_err(|error| format!("语雀登录地址无效：{error}"))?)
+            .show()
+            .map_err(|error| format!("无法显示语雀登录窗口：{error}"))?;
+        window
+            .set_focus()
+            .map_err(|error| format!("无法聚焦语雀登录窗口：{error}"))?;
+        window
+            .navigate(
+                Url::parse(YUQUE_LOGIN_URL)
+                    .map_err(|error| format!("语雀登录地址无效：{error}"))?,
+            )
             .map_err(|error| format!("无法打开语雀登录页：{error}"))?;
         return Ok(());
     }
 
-    let login_url = Url::parse(YUQUE_LOGIN_URL).map_err(|error| format!("语雀登录地址无效：{error}"))?;
+    let login_url =
+        Url::parse(YUQUE_LOGIN_URL).map_err(|error| format!("语雀登录地址无效：{error}"))?;
     WebviewWindowBuilder::new(&app, YUQUE_LOGIN_WINDOW, WebviewUrl::External(login_url))
         .title("登录语雀 · QuePic")
         .inner_size(1120.0, 760.0)
@@ -95,12 +107,14 @@ async fn capture_yuque_login(
         .get_webview_window(YUQUE_LOGIN_WINDOW)
         .ok_or_else(|| "请先点击“登录语雀”并在登录窗口中完成登录。".to_string())?;
     let cookie_window = window.clone();
-    let upload_url = Url::parse(YUQUE_UPLOAD_URL).map_err(|error| format!("语雀上传地址无效：{error}"))?;
+    let upload_url =
+        Url::parse(YUQUE_UPLOAD_URL).map_err(|error| format!("语雀上传地址无效：{error}"))?;
 
-    let cookies = tauri::async_runtime::spawn_blocking(move || cookie_window.cookies_for_url(upload_url))
-        .await
-        .map_err(|error| format!("读取语雀登录会话失败：{error}"))?
-        .map_err(|error| format!("无法读取语雀 Cookie：{error}"))?;
+    let cookies =
+        tauri::async_runtime::spawn_blocking(move || cookie_window.cookies_for_url(upload_url))
+            .await
+            .map_err(|error| format!("读取语雀登录会话失败：{error}"))?
+            .map_err(|error| format!("无法读取语雀 Cookie：{error}"))?;
 
     let cookie_header = cookies
         .iter()
@@ -115,7 +129,10 @@ async fn capture_yuque_login(
 
     credentials::save(&account_name, &cookie_header)?;
     let _ = window.close();
-    Ok(CredentialStatus { configured: true, account_name })
+    Ok(CredentialStatus {
+        configured: true,
+        account_name,
+    })
 }
 
 #[tauri::command]
@@ -227,30 +244,31 @@ async fn ensure_preview(
         }
     }
 
-    let public_error = match remote_preview::download_preview(
-        preview_limiter,
-        &asset.remote_url,
-        prefer_original,
-    )
-    .await
-    {
-        Ok(downloaded) => {
-            let preview = cache_and_record_task(
-                cache_lock.clone(),
-                preview_cache_dir.clone(),
-                database_path.clone(),
-                asset_id,
-                asset.sha256.clone(),
-                downloaded.mime_type,
-                downloaded.bytes,
-                "remote_url".into(),
-            )
-            .await?;
-            let path = if prefer_original { preview.original_path } else { preview.thumbnail_path };
-            return Ok(local_preview_result(asset_id, path, "remote_url"));
-        }
-        Err(error) => error,
-    };
+    let public_error =
+        match remote_preview::download_preview(preview_limiter, &asset.remote_url, prefer_original)
+            .await
+        {
+            Ok(downloaded) => {
+                let preview = cache_and_record_task(
+                    cache_lock.clone(),
+                    preview_cache_dir.clone(),
+                    database_path.clone(),
+                    asset_id,
+                    asset.sha256.clone(),
+                    downloaded.mime_type,
+                    downloaded.bytes,
+                    "remote_url".into(),
+                )
+                .await?;
+                let path = if prefer_original {
+                    preview.original_path
+                } else {
+                    preview.thumbnail_path
+                };
+                return Ok(local_preview_result(asset_id, path, "remote_url"));
+            }
+            Err(error) => error,
+        };
 
     let session_result = match credentials::load(&asset.account_name) {
         Ok(cookie) => yuque::download_image(&cookie, &asset.remote_url).await,
@@ -270,14 +288,22 @@ async fn ensure_preview(
                 "yuque_session".into(),
             )
             .await?;
-            let path = if prefer_original { preview.original_path } else { preview.thumbnail_path };
+            let path = if prefer_original {
+                preview.original_path
+            } else {
+                preview.thumbnail_path
+            };
             Ok(local_preview_result(asset_id, path, "yuque_session"))
         }
         Err(session_error) => {
             let combined_error = format!("{public_error}；语雀会话回源失败：{session_error}");
             let _ = database::mark_preview_error(&database_path, asset_id, &combined_error);
             if allow_wordpress_fallback {
-                let width = if prefer_original { Some(1_024) } else { Some(640) };
+                let width = if prefer_original {
+                    Some(1_024)
+                } else {
+                    Some(640)
+                };
                 let proxy_url = yuque::wordpress_proxy_url(&asset.remote_url, width)?;
                 return Ok(PreviewResult {
                     asset_id,
@@ -298,14 +324,15 @@ async fn upload_image(
     state: State<'_, AppState>,
     input: UploadInput,
 ) -> Result<UploadResult, String> {
-    validate_upload(&input)?;
+    let account_name = normalize_account_name(&input.account_name)?;
+    let token_configured = openapi_token::configured(&account_name)?;
+    validate_upload(&input, token_configured)?;
     let database_path = state.database_path.clone();
     let preview_cache_dir = state.preview_cache_dir.clone();
     let cache_lock = state.cache_lock.clone();
     let upload_gate = state.upload_gate.clone();
     drop(state);
 
-    let account_name = normalize_account_name(&input.account_name)?;
     let category = normalize_category(&input.category)?;
     let file_name = sanitize_file_name(&input.file_name)?;
     let mut hasher = Sha256::new();
@@ -352,7 +379,10 @@ async fn upload_image(
     let quota = database::upload_quota_status(&database_path, &account_name)?;
     if quota.remaining <= 0 {
         let reset = quota.reset_at.unwrap_or_else(|| "稍后".into());
-        return Err(format!("当前账号过去一小时已达到 {} 次上传尝试，请在 {reset} 后继续。", quota.limit));
+        return Err(format!(
+            "当前账号过去一小时已达到 {} 次上传尝试，请在 {reset} 后继续。",
+            quota.limit
+        ));
     }
     if quota.retry_after_seconds > 0 {
         tokio::time::sleep(Duration::from_secs(quota.retry_after_seconds as u64)).await;
@@ -427,7 +457,10 @@ async fn upload_image(
     }
 
     let refreshed = database::find_by_id(&database_path, saved_asset.id)?.unwrap_or(saved_asset);
-    Ok(UploadResult { asset: refreshed, deduplicated })
+    Ok(UploadResult {
+        asset: refreshed,
+        deduplicated,
+    })
 }
 
 async fn reuse_existing_asset(
@@ -524,9 +557,15 @@ fn shared_cache_stats(path: &Path) -> Result<CacheStats, String> {
 
 fn existing_local_path(asset: &AssetRecord, prefer_original: bool) -> Option<String> {
     let candidates = if prefer_original {
-        [asset.original_path.as_deref(), asset.thumbnail_path.as_deref()]
+        [
+            asset.original_path.as_deref(),
+            asset.thumbnail_path.as_deref(),
+        ]
     } else {
-        [asset.thumbnail_path.as_deref(), asset.original_path.as_deref()]
+        [
+            asset.thumbnail_path.as_deref(),
+            asset.original_path.as_deref(),
+        ]
     };
     candidates
         .into_iter()
@@ -546,12 +585,27 @@ fn local_preview_result(asset_id: i64, path: String, source: &str) -> PreviewRes
     }
 }
 
-fn validate_upload(input: &UploadInput) -> Result<(), String> {
+fn maximum_upload_bytes(token_configured: bool) -> usize {
+    if token_configured {
+        TOKEN_MAX_IMAGE_BYTES
+    } else {
+        NO_TOKEN_MAX_IMAGE_BYTES
+    }
+}
+
+fn validate_upload(input: &UploadInput, token_configured: bool) -> Result<(), String> {
     if input.bytes.is_empty() {
         return Err("图片内容为空。".into());
     }
-    if input.bytes.len() > MAX_IMAGE_BYTES {
-        return Err("图片超过 50 MB 限制。".into());
+    let maximum_bytes = maximum_upload_bytes(token_configured);
+    if input.bytes.len() > maximum_bytes {
+        let limit_mb = maximum_bytes / 1024 / 1024;
+        let guidance = if token_configured {
+            "当前账号已配置 Token。"
+        } else {
+            "保存 OpenAPI Token 后可提升到 50 MB。"
+        };
+        return Err(format!("图片超过当前 {limit_mb} MB 上传限制。{guidance}"));
     }
     if !ALLOWED_MIME_TYPES.contains(&input.mime_type.as_str()) {
         return Err(format!("不支持的图片格式：{}", input.mime_type));
@@ -579,7 +633,11 @@ fn normalize_account_name(value: &str) -> Result<String, String> {
 
 fn normalize_category(value: &str) -> Result<String, String> {
     let value = value.trim();
-    let value = if value.is_empty() { DEFAULT_CATEGORY } else { value };
+    let value = if value.is_empty() {
+        DEFAULT_CATEGORY
+    } else {
+        value
+    };
     if value.chars().count() > 80 {
         return Err("图片分类不能超过 80 个字符。".into());
     }
@@ -604,6 +662,17 @@ fn sanitize_file_name(value: &str) -> Result<String, String> {
         return Err("图片文件名无效。".into());
     }
     Ok(sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{maximum_upload_bytes, NO_TOKEN_MAX_IMAGE_BYTES, TOKEN_MAX_IMAGE_BYTES};
+
+    #[test]
+    fn applies_token_tier_upload_limits() {
+        assert_eq!(maximum_upload_bytes(false), NO_TOKEN_MAX_IMAGE_BYTES);
+        assert_eq!(maximum_upload_bytes(true), TOKEN_MAX_IMAGE_BYTES);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -651,6 +720,10 @@ pub fn run() {
             upload_image,
             yuque_openapi::create_yuque_document,
             yuque_openapi::resolve_upload_context,
+            yuque_openapi::list_yuque_repositories,
+            yuque_openapi::ensure_quepic_repository,
+            yuque_openapi::list_yuque_documents,
+            yuque_openapi::delete_yuque_document,
         ])
         .run(tauri::generate_context!())
         .expect("QuePic 启动失败");

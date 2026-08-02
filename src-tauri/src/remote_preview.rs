@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use reqwest::{header, redirect::Policy};
-use tokio::{sync::{Mutex, OwnedSemaphorePermit, Semaphore}, time::{sleep, Instant}};
+use tokio::{
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
+    time::{sleep, Instant},
+};
 use url::Url;
 
 const MAX_IMAGE_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
@@ -69,7 +72,10 @@ pub async fn download_preview(
 
     Err(format!(
         "无法通过已上传 URL 获取图片：{}",
-        errors.last().cloned().unwrap_or_else(|| "远程地址不可用。".into())
+        errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "远程地址不可用。".into())
     ))
 }
 
@@ -83,7 +89,10 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
 
     let mut response = client
         .get(url.clone())
-        .header(header::ACCEPT, "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        .header(
+            header::ACCEPT,
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        )
         .header(header::USER_AGENT, USER_AGENT)
         .send()
         .await
@@ -93,7 +102,10 @@ async fn download_candidate(url: &Url) -> Result<DownloadedImage, String> {
         return Err("远程图片地址返回重定向，已拒绝继续请求。".into());
     }
     if !response.status().is_success() {
-        return Err(format!("远程图片请求失败（HTTP {}）。", response.status().as_u16()));
+        return Err(format!(
+            "远程图片请求失败（HTTP {}）。",
+            response.status().as_u16()
+        ));
     }
     if response.content_length().unwrap_or(0) as usize > MAX_IMAGE_DOWNLOAD_BYTES {
         return Err("远程图片超过 50 MB 下载限制。".into());
@@ -134,10 +146,7 @@ fn preview_candidates(url: &Url, prefer_original: bool) -> Vec<Url> {
     let has_transform = url.query_pairs().any(|(key, _)| key == "x-oss-process");
     let mut candidates = Vec::new();
 
-    if !prefer_original
-        && (host == "nlark.com" || host.ends_with(".nlark.com"))
-        && !has_transform
-    {
+    if !prefer_original && (host == "nlark.com" || host.ends_with(".nlark.com")) && !has_transform {
         let mut optimized = url.clone();
         optimized
             .query_pairs_mut()

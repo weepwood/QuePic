@@ -271,3 +271,99 @@
     flex-direction: column;
   }
 }
+
+
+/* QuePic Yuque OpenAPI document manager */
+.yuque-document-manager {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.yuque-manager-heading,
+.yuque-manager-actions,
+.yuque-manager-column-title,
+.yuque-manager-selection {
+  display: flex;
+  align-items: center;
+}
+
+.yuque-manager-heading {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.yuque-manager-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.yuque-manager-heading h3 { margin: 4px 0; }
+.yuque-manager-heading p, .yuque-manager-empty p { margin: 0; color: var(--muted); }
+.yuque-manager-actions { gap: 8px; flex-wrap: wrap; }
+.yuque-manager-actions button { display: inline-flex; align-items: center; gap: 7px; }
+.yuque-manager-actions .primary { background: var(--accent); color: white; border-color: transparent; }
+
+.yuque-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, .82fr) minmax(320px, 1.18fr);
+  gap: 14px;
+}
+
+.yuque-manager-column {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.yuque-manager-column-title { gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.yuque-manager-column-title small { margin-left: auto; color: var(--muted); }
+.yuque-manager-list { display: grid; gap: 6px; max-height: 330px; padding: 8px; overflow: auto; }
+.yuque-manager-placeholder { margin: 0; padding: 18px 12px; color: var(--muted); text-align: center; }
+
+.yuque-manager-item,
+.yuque-document-row > button:first-child {
+  position: relative;
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  padding: 11px 38px 11px 12px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.yuque-manager-item:hover,
+.yuque-document-row > button:first-child:hover { background: var(--hover); }
+.yuque-manager-item.active,
+.yuque-document-row.active > button:first-child { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.yuque-manager-item > span, .yuque-document-row > button span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.yuque-manager-item strong, .yuque-document-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yuque-manager-item b, .yuque-document-row b { padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 10px; }
+.yuque-manager-item small, .yuque-document-row small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.yuque-manager-item > svg, .yuque-document-row > button > svg { position: absolute; top: 50%; right: 12px; color: var(--accent); transform: translateY(-50%); }
+
+.yuque-document-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; align-items: stretch; gap: 4px; }
+.yuque-document-row > a, .yuque-document-row > button.danger { display: grid; place-items: center; padding: 0; border-radius: 9px; }
+.yuque-document-row > a { color: var(--muted); }
+.yuque-document-row > button.danger { color: var(--danger); }
+
+.yuque-manager-selection { gap: 8px; padding: 11px 13px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.yuque-manager-selection a { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--accent); }
+.yuque-manager-error { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.yuque-manager-empty { display: flex; align-items: flex-start; gap: 11px; padding: 15px; border: 1px dashed var(--border); border-radius: 14px; }
+.yuque-manager-empty strong { display: block; margin-bottom: 4px; }
+
+@media (max-width: 900px) {
+  .yuque-manager-heading { align-items: flex-start; flex-direction: column; }
+  .yuque-manager-grid { grid-template-columns: 1fr; }
+}

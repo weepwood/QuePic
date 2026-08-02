@@ -11,6 +11,7 @@ import {
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 
+import { YuqueDocumentManager } from './YuqueDocumentManager';
 import {
   getCredentialStatus,
   getOpenApiTokenStatus,
@@ -315,6 +316,16 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
           </div>
         </div>
 
+        <YuqueDocumentManager
+          accountName={accountName}
+          tokenReady={tokenReady}
+          disabled={running}
+          knowledgeBaseUrl={knowledgeBaseUrl}
+          documentUrl={documentUrl}
+          onKnowledgeBaseUrlChange={setKnowledgeBaseUrl}
+          onDocumentUrlChange={setDocumentUrl}
+        />
+
         <div className="batch-doc-target-grid">
           <label className="field">
             <span>目标知识库 URL</span>
@@ -328,7 +339,7 @@ export function BatchDocumentUploader({ accountName, onUploaded }: BatchDocument
               }}
               placeholder="https://www.yuque.com/weepwood/index/dvezaglsvggap7g5"
             />
-            <small>可以粘贴知识库首页或其中任意文档 URL，QuePic 会解析前两段知识库路径。</small>
+            <small>有 Token 时可在上方直接选择；这里保留手动 URL 作为高级回退。</small>
           </label>
 
           <label className="field">
