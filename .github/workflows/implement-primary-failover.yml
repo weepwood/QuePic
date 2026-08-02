@@ -47,6 +47,7 @@ jobs:
           rm -f .github/workflows/implement-primary-failover.yml
           rm -f .github/workflows/snapshot-primary-failover.yml
           rm -f primary-failover-status.json primary-failover-failed.log
+          rm -f scripts/.trigger-primary-failover
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
