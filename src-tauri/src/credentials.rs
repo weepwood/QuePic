@@ -21,7 +21,13 @@ pub fn save(account_name: &str, cookie: &str) -> Result<(), String> {
     for (index, chunk) in chunks.iter().enumerate() {
         chunk_entry(account_name, &generation, index)?
             .set_password(chunk)
-            .map_err(|error| format!("无法写入系统密钥库分片 {}/{}：{error}", index + 1, chunks.len()))?;
+            .map_err(|error| {
+                format!(
+                    "无法写入系统密钥库分片 {}/{}：{error}",
+                    index + 1,
+                    chunks.len()
+                )
+            })?;
     }
 
     let manifest = format!("{MANIFEST_PREFIX}{generation}|{}", chunks.len());
@@ -53,7 +59,9 @@ pub fn load(account_name: &str) -> Result<String, String> {
         for index in 0..count {
             let chunk = chunk_entry(account_name, &generation, index)?
                 .get_password()
-                .map_err(|error| format!("无法读取系统密钥库分片 {}/{}：{error}", index + 1, count))?;
+                .map_err(|error| {
+                    format!("无法读取系统密钥库分片 {}/{}：{error}", index + 1, count)
+                })?;
             cookie.push_str(&chunk);
         }
         validate_cookie(&cookie)?;
@@ -154,7 +162,10 @@ fn clear_chunks(account_name: &str, generation: &str, count: usize) {
 }
 
 fn chunk_entry(account_name: &str, generation: &str, index: usize) -> Result<Entry, String> {
-    entry(&format!("{}::cookie-v2::{generation}::{index:03}", account_name.trim()))
+    entry(&format!(
+        "{}::cookie-v2::{generation}::{index:03}",
+        account_name.trim()
+    ))
 }
 
 fn entry(account_name: &str) -> Result<Entry, String> {
@@ -182,16 +193,25 @@ mod tests {
 
     #[test]
     fn splits_long_cookie_below_windows_limit() {
-        let cookie = format!("session={}; token={}", "a".repeat(4_000), "中".repeat(1_000));
+        let cookie = format!(
+            "session={}; token={}",
+            "a".repeat(4_000),
+            "中".repeat(1_000)
+        );
         let chunks = split_by_utf16_units(&cookie, CHUNK_UTF16_LIMIT);
         assert!(chunks.len() > 1);
-        assert!(chunks.iter().all(|chunk| chunk.encode_utf16().count() <= CHUNK_UTF16_LIMIT));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.encode_utf16().count() <= CHUNK_UTF16_LIMIT));
         assert_eq!(chunks.concat(), cookie);
     }
 
     #[test]
     fn parses_v2_manifest() {
-        assert_eq!(parse_manifest("v2|0123456789abcdef|3"), Some(("0123456789abcdef".into(), 3)));
+        assert_eq!(
+            parse_manifest("v2|0123456789abcdef|3"),
+            Some(("0123456789abcdef".into(), 3))
+        );
         assert_eq!(parse_manifest("session=value"), None);
         assert_eq!(parse_manifest("v2|bad|0"), None);
     }
