@@ -37,170 +37,11 @@ jobs:
             libdbus-1-dev \
             pkg-config
 
-      - name: Fix deterministic patch multiplicity
+      - name: Apply backend implementation
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          path = Path('.github/scripts/apply_image_library_backend.py')
-          text = path.read_text(encoding='utf-8')
-
-          first = '''text = replace_once(
-              text,
-              ''' + "'''            existing,\n            category,\n            sha256,'''," + '''
-              ''' + "'''            existing,\n            category,\n            input.tags.clone(),\n            sha256,'''," + '''
-              path,
-          )
-          '''
-          second = '''text = replace_once(
-              text,
-              ''' + "'''            existing,\n            category,\n            sha256,\n            input.mime_type,'''," + '''
-              ''' + "'''            existing,\n            category,\n            input.tags.clone(),\n            sha256,\n            input.mime_type,'''," + '''
-              path,
-          )
-          '''
-          replacement = '''old_reuse_call = """            existing,
-                      category,
-                      sha256,"""
-          if text.count(old_reuse_call) != 2:
-              raise SystemExit(f"src-tauri/src/lib.rs: expected two reuse calls, found {text.count(old_reuse_call)}")
-          text = text.replace(
-              old_reuse_call,
-              """            existing,
-                      category,
-                      input.tags.clone(),
-                      sha256,""",
-          )
-          '''
-          if first not in text or second not in text:
-              raise SystemExit('unable to locate reuse call patch blocks')
-          text = text.replace(first, replacement).replace(second, '')
-
-          queue_block = """text = replace_once(
-              text,
-              '  category: string;\\n  createdAt: number;',
-              '  category: string;\\n  tags: string[];\\n  createdAt: number;',
-              path,
-          )
-          """
-          if text.count(queue_block) != 2:
-              raise SystemExit(f'unable to locate two queue shape blocks: {text.count(queue_block)}')
-          queue_replacement = """old_queue_shape = '  category: string;\\n  createdAt: number;'
-          if text.count(old_queue_shape) != 2:
-              raise SystemExit(f"src/types.ts: expected two queue shapes, found {text.count(old_queue_shape)}")
-          text = text.replace(
-              old_queue_shape,
-              '  category: string;\\n  tags: string[];\\n  createdAt: number;',
-          )
-          """
-          text = text.replace(queue_block, queue_replacement, 1)
-          text = text.replace(queue_block, '', 1)
-          path.write_text(text, encoding='utf-8')
-          PY
-
-      - name: Apply backend patch
-        run: python3 .github/scripts/apply_image_library_backend.py
-
-      - name: Complete TypeScript call sites
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          def replace_once(path: str, old: str, new: str) -> None:
-              file = Path(path)
-              text = file.read_text(encoding='utf-8')
-              if text.count(old) != 1:
-                  raise SystemExit(f'{path}: expected one match, found {text.count(old)}')
-              file.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          replace_once(
-              'src/App.tsx',
-              '''    accountName,
-              category,
-              createdAt: Date.now(),''',
-              '''    accountName,
-              category,
-              tags: [],
-              createdAt: Date.now(),''',
-          )
-          replace_once(
-              'src/App.tsx',
-              'const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category);',
-              'const result = await uploadImage(item.file, item.accountName, item.width, item.height, item.category, item.tags || []);',
-          )
-          replace_once(
-              'src/components/BatchDocumentUploader.tsx',
-              'const upload = await uploadImage(file, accountName, null, null, folderName);',
-              'const upload = await uploadImage(file, accountName, null, null, folderName, []);',
-          )
-          PY
-
-      - name: Fix Rust implementation details
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
-              file = Path(path)
-              text = file.read_text(encoding='utf-8')
-              count = text.count(old)
-              if count != expected:
-                  raise SystemExit(f'{path}: expected {expected} matches, found {count}\n{old}')
-              file.write_text(text.replace(old, new), encoding='utf-8')
-
-          replace_exact('src-tauri/src/preview.rs', '    io::Cursor,\n', '')
-          replace_exact('src-tauri/src/preview.rs', 'DynamicImage, ImageFormat', 'DynamicImage')
-
-          replace_exact(
-              'src-tauri/src/lib.rs',
-              '    let downloaded = match remote_preview::download_preview(',
-              '    let downloaded_bytes = match remote_preview::download_preview(',
-          )
-          replace_exact(
-              'src-tauri/src/lib.rs',
-              '        Ok(image) => image,\n        Err(public_error) => {',
-              '        Ok(image) => image.bytes,\n        Err(public_error) => {',
-          )
-          replace_exact(
-              'src-tauri/src/lib.rs',
-              '''                .map_err(|session_error| {
-                    format!("原图下载失败：{public_error}；语雀会话回源失败：{session_error}")
-                })?''',
-              '''                .map_err(|session_error| {
-                    format!("原图下载失败：{public_error}；语雀会话回源失败：{session_error}")
-                })?
-                .bytes''',
-          )
-          replace_exact(
-              'src-tauri/src/lib.rs',
-              'fs::write(&target, downloaded.bytes)',
-              'fs::write(&target, downloaded_bytes)',
-          )
-
-          shared_old = '''    statement
-        .query_map([], |row| row.get(0))
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())'''
-          shared_new = '''    let rows = statement
-        .query_map([], |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())'''
-          replace_exact('src-tauri/src/database.rs', shared_old, shared_new, expected=2)
-
-          tags_old = '''    statement
-        .query_map([asset_id], |row| row.get(0))
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())'''
-          tags_new = '''    let rows = statement
-        .query_map([asset_id], |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())'''
-          replace_exact('src-tauri/src/database.rs', tags_old, tags_new)
-          PY
+          python3 .github/scripts/prepare_image_library_patch.py
+          python3 .github/scripts/apply_image_library_backend.py
+          python3 .github/scripts/fix_image_library_output.py
 
       - name: Format and verify
         run: |
@@ -221,6 +62,8 @@ jobs:
           rm -f package-lock.json
           git checkout origin/main -- src-tauri/icons src-tauri/gen || true
           rm .github/scripts/apply_image_library_backend.py
+          rm .github/scripts/prepare_image_library_patch.py
+          rm .github/scripts/fix_image_library_output.py
           rm .github/workflows/apply-image-library-backend.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
