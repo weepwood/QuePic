@@ -1,0 +1,95 @@
+name: Finalize folder and account unification
+
+on:
+  pull_request_target:
+    types: [reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  finalize:
+    if: github.event.pull_request.head.ref == 'feat/primary-account-failover'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/primary-account-failover
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install native dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+
+      - name: Normalize source and remove generated files
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/App.tsx')
+          text = path.read_text(encoding='utf-8')
+          if 'NO_TOKEN_MAX_UPLOAD_BYTES,' not in text.split("from './lib/uploadRouting';", 1)[0].rsplit('import {', 1)[-1]:
+            text = text.replace(
+              "  nextHourlyResetTimestamp,\n  prioritizeUploadProfiles,\n  uploadLimitForProfile,\n",
+              "  nextHourlyResetTimestamp,\n  NO_TOKEN_MAX_UPLOAD_BYTES,\n  prioritizeUploadProfiles,\n  TOKEN_MAX_UPLOAD_BYTES,\n  uploadLimitForProfile,\n",
+              1,
+            )
+          text = text.replace(
+            "const NO_TOKEN_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;\nconst TOKEN_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;\n",
+            "",
+            1,
+          )
+          text = text.replace(
+            '主账号负责当天文档；主账号额度用满后，已登录且已绑定上传上下文的从账号会自动接力，图片仍统一写入主账号当天文档。',
+            '主账号负责当天文档和大图；已登录子账号优先处理不超过 10 MB 的小图，图片链接仍统一写入主账号当天文档。',
+          )
+          text = text.replace('从账号', '子账号')
+          path.write_text(text, encoding='utf-8')
+          PY
+          git rm -r --ignore-unmatch src-tauri/icons
+          git checkout origin/main -- src-tauri/icons || true
+          git checkout origin/main -- src-tauri/src/credentials.rs
+
+      - name: Validate final source
+        run: |
+          npm install --silent --no-package-lock
+          npm run build
+          npm run icons
+          rustfmt --edition 2021 src-tauri/src/lib.rs src-tauri/src/openapi_token.rs src-tauri/src/database.rs src-tauri/src/credentials.rs
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Commit final clean diff
+        run: |
+          git rm -r --ignore-unmatch src-tauri/icons
+          git checkout origin/main -- src-tauri/icons || true
+          git checkout origin/main -- src-tauri/src/credentials.rs
+          rm -f package-lock.json src-tauri/Cargo.lock
+          rm -rf src-tauri/gen
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'chore: 收敛主子账号配置与清理生成文件'
+          git push origin HEAD:feat/primary-account-failover
+
+      - name: Cleanup workflow
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git clone --quiet --branch main "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/quepic-main
+          cd /tmp/quepic-main
+          rm -f .github/workflows/finalize-folder-account-unification.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'chore: 清理文件夹与账号改造最终执行器' || exit 0
+          git push origin HEAD:main
