@@ -105,7 +105,7 @@ export interface UploadContextResult {
   attachable_id: number;
   document_url: string;
   title: string;
-  source?: 'openapi' | 'session' | string;
+  source: 'openapi' | 'session' | string;
 }
 
 export interface SaveYuqueDocumentInput {
