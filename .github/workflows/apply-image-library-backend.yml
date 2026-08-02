@@ -135,6 +135,73 @@ jobs:
           )
           PY
 
+      - name: Fix Rust implementation details
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} matches, found {count}\n{old}')
+              file.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_exact('src-tauri/src/preview.rs', '    io::Cursor,\n', '')
+          replace_exact('src-tauri/src/preview.rs', 'DynamicImage, ImageFormat', 'DynamicImage')
+
+          replace_exact(
+              'src-tauri/src/lib.rs',
+              '    let downloaded = match remote_preview::download_preview(',
+              '    let downloaded_bytes = match remote_preview::download_preview(',
+          )
+          replace_exact(
+              'src-tauri/src/lib.rs',
+              '        Ok(image) => image,\n        Err(public_error) => {',
+              '        Ok(image) => image.bytes,\n        Err(public_error) => {',
+          )
+          replace_exact(
+              'src-tauri/src/lib.rs',
+              '''                .map_err(|session_error| {
+                    format!("原图下载失败：{public_error}；语雀会话回源失败：{session_error}")
+                })?''',
+              '''                .map_err(|session_error| {
+                    format!("原图下载失败：{public_error}；语雀会话回源失败：{session_error}")
+                })?
+                .bytes''',
+          )
+          replace_exact(
+              'src-tauri/src/lib.rs',
+              'fs::write(&target, downloaded.bytes)',
+              'fs::write(&target, downloaded_bytes)',
+          )
+
+          shared_old = '''    statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())'''
+          shared_new = '''    let rows = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())'''
+          replace_exact('src-tauri/src/database.rs', shared_old, shared_new, expected=2)
+
+          tags_old = '''    statement
+        .query_map([asset_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())'''
+          tags_new = '''    let rows = statement
+        .query_map([asset_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())'''
+          replace_exact('src-tauri/src/database.rs', tags_old, tags_new)
+          PY
+
       - name: Format and verify
         run: |
           rustfmt --edition 2021 \
@@ -144,6 +211,7 @@ jobs:
             src-tauri/src/lib.rs \
             src-tauri/src/yuque_openapi.rs
           npm install --silent
+          npm run icons
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml --lib
@@ -151,6 +219,7 @@ jobs:
       - name: Commit backend implementation
         run: |
           rm -f package-lock.json
+          git checkout origin/main -- src-tauri/icons src-tauri/gen || true
           rm .github/scripts/apply_image_library_backend.py
           rm .github/workflows/apply-image-library-backend.yml
           git config user.name "github-actions[bot]"
