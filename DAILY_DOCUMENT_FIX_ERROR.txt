@@ -1,9 +1,0 @@
-Daily document consistency fix failed.
-
-Traceback (most recent call last):
-  File "/tmp/apply_daily_document_consistency.py", line 13, in <module>
-    types_text = replace_once(
-                 ^^^^^^^^^^^^^
-  File "/tmp/apply_daily_document_consistency.py", line 6, in replace_once
-    raise RuntimeError(f"missing replacement target: {label}")
-RuntimeError: missing replacement target: DailyDocumentImage asset id

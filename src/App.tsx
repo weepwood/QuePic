@@ -691,7 +691,7 @@ export default function App() {
       if (!deferRefresh) {
         await Promise.all([refreshAssets(), refreshCacheStats(), refreshProfiles()]);
         if (activeAccountRef.current === item.accountName) {
-await refreshAccountStatus(item.accountName);
+          await refreshAccountStatus(item.accountName);
         }
       }
       return result;
@@ -925,7 +925,7 @@ await refreshAccountStatus(item.accountName);
           continue;
         }
         const dailyImages: DailyDocumentImage[] = [];
-      const dailyItems: UploadQueueItem[] = [];
+        const dailyItems: UploadQueueItem[] = [];
         for (const item of accountItems.slice(0, accountQuota.remaining)) {
           const result = await uploadOne(item.id, true);
           if (result) {
