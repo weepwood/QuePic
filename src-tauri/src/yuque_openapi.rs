@@ -50,7 +50,9 @@ struct YuqueDocument {
     id: i64,
     title: String,
     slug: String,
+    format: Option<String>,
     body: Option<String>,
+    body_draft: Option<String>,
     book: Option<YuqueBook>,
 }
 
@@ -85,11 +87,11 @@ pub async fn create_yuque_document(
         .filter(|value| !value.is_empty())
         .map(|value| parse_yuque_url(value, true))
         .transpose()?;
-
-    if let Some(location) = document_location.as_ref() {
-        if location.namespace != knowledge_base.namespace {
-            return Err("目标文档与目标知识库不属于同一个语雀知识库。".into());
-        }
+    if document_location
+        .as_ref()
+        .is_some_and(|location| location.namespace != knowledge_base.namespace)
+    {
+        return Err("目标文档与目标知识库不属于同一个语雀知识库。".into());
     }
 
     let client = secure_client()?;
@@ -102,42 +104,50 @@ pub async fn create_yuque_document(
         .unwrap_or(&knowledge_base.namespace)
         .to_string();
 
-    match document_location {
-        Some(location) => {
-            let slug = location
-                .document_slug
-                .as_deref()
-                .ok_or_else(|| "目标文档 URL 缺少文档标识。".to_string())?;
-            let existing = fetch_document(&client, &token, &namespace, slug).await?;
-            let merged_body = append_markdown(existing.body.as_deref(), body);
-            let updated = update_document(
-                &client,
-                &token,
-                repo.id,
-                existing.id,
-                &existing.title,
-                &merged_body,
-            )
-            .await?;
-            Ok(document_result(updated, &namespace, false))
+    if let Some(location) = document_location {
+        let slug = location
+            .document_slug
+            .as_deref()
+            .ok_or_else(|| "目标文档 URL 缺少文档标识。".to_string())?;
+        let existing = fetch_document(&client, &token, &namespace, slug).await?;
+        if existing
+            .format
+            .as_deref()
+            .is_some_and(|format| !format.eq_ignore_ascii_case("markdown"))
+        {
+            return Err("目标文档不是 Markdown 格式。为避免破坏 Lake 文档，请新建 Markdown 文档后重试。".into());
         }
-        None => {
-            let created = create_document(&client, &token, repo.id, title, body).await?;
-            Ok(document_result(created, &namespace, true))
-        }
+        let existing_body = existing.body.as_deref().or(existing.body_draft.as_deref());
+        let merged_body = append_markdown(existing_body, body);
+        let updated = update_document(
+            &client,
+            &token,
+            repo.id,
+            existing.id,
+            &existing.title,
+            &merged_body,
+        )
+        .await?;
+        return Ok(document_result(updated, &namespace, false));
     }
+
+    let created = create_document(&client, &token, repo.id, title, body).await?;
+    Ok(document_result(created, &namespace, true))
 }
 
 async fn fetch_repo(client: &Client, token: &str, namespace: &str) -> Result<YuqueRepo, String> {
     let endpoint = format!("{YUQUE_API_BASE}/repos/{namespace}");
-    let response = client
-        .get(endpoint)
-        .header("X-Auth-Token", token)
-        .header(ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|error| format!("读取语雀知识库失败：{error}"))?;
-    let text = read_response(response, "读取语雀知识库").await?;
+    let text = request_text(
+        client
+            .get(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("读取语雀知识库失败：{error}"))?,
+        "读取语雀知识库",
+    )
+    .await?;
     serde_json::from_str::<YuqueRepoResponse>(&text)
         .map(|payload| payload.data)
         .map_err(|error| format!("解析语雀知识库响应失败：{error}"))
@@ -150,17 +160,18 @@ async fn fetch_document(
     slug: &str,
 ) -> Result<YuqueDocument, String> {
     let endpoint = format!("{YUQUE_API_BASE}/repos/{namespace}/docs/{slug}?raw=1");
-    let response = client
-        .get(endpoint)
-        .header("X-Auth-Token", token)
-        .header(ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|error| format!("读取目标语雀文档失败：{error}"))?;
-    let text = read_response(response, "读取目标语雀文档").await?;
-    serde_json::from_str::<YuqueResponse>(&text)
-        .map(|payload| payload.data)
-        .map_err(|error| format!("解析目标语雀文档失败：{error}"))
+    let text = request_text(
+        client
+            .get(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("读取目标语雀文档失败：{error}"))?,
+        "读取目标语雀文档",
+    )
+    .await?;
+    parse_document(&text, "解析目标语雀文档")
 }
 
 async fn create_document(
@@ -171,22 +182,19 @@ async fn create_document(
     body: &str,
 ) -> Result<YuqueDocument, String> {
     let endpoint = format!("{YUQUE_API_BASE}/repos/{book_id}/docs");
-    let response = client
-        .post(endpoint)
-        .header("X-Auth-Token", token)
-        .header(ACCEPT, "application/json")
-        .json(&json!({
-            "title": title,
-            "format": "markdown",
-            "body": body,
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("创建语雀文档请求失败：{error}"))?;
-    let text = read_response(response, "创建语雀文档").await?;
-    serde_json::from_str::<YuqueResponse>(&text)
-        .map(|payload| payload.data)
-        .map_err(|error| format!("解析语雀文档响应失败：{error}"))
+    let text = request_text(
+        client
+            .post(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .json(&json!({ "title": title, "format": "markdown", "body": body }))
+            .send()
+            .await
+            .map_err(|error| format!("创建语雀文档请求失败：{error}"))?,
+        "创建语雀文档",
+    )
+    .await?;
+    parse_document(&text, "解析语雀文档响应")
 }
 
 async fn update_document(
@@ -198,25 +206,28 @@ async fn update_document(
     body: &str,
 ) -> Result<YuqueDocument, String> {
     let endpoint = format!("{YUQUE_API_BASE}/repos/{book_id}/docs/{document_id}");
-    let response = client
-        .put(endpoint)
-        .header("X-Auth-Token", token)
-        .header(ACCEPT, "application/json")
-        .json(&json!({
-            "title": title,
-            "format": "markdown",
-            "body": body,
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("更新语雀文档请求失败：{error}"))?;
-    let text = read_response(response, "更新语雀文档").await?;
-    serde_json::from_str::<YuqueResponse>(&text)
-        .map(|payload| payload.data)
-        .map_err(|error| format!("解析语雀文档响应失败：{error}"))
+    let text = request_text(
+        client
+            .put(endpoint)
+            .header("X-Auth-Token", token)
+            .header(ACCEPT, "application/json")
+            .json(&json!({ "title": title, "format": "markdown", "body": body }))
+            .send()
+            .await
+            .map_err(|error| format!("更新语雀文档请求失败：{error}"))?,
+        "更新语雀文档",
+    )
+    .await?;
+    parse_document(&text, "解析语雀文档响应")
 }
 
-async fn read_response(response: Response, action: &str) -> Result<String, String> {
+fn parse_document(text: &str, action: &str) -> Result<YuqueDocument, String> {
+    serde_json::from_str::<YuqueResponse>(text)
+        .map(|payload| payload.data)
+        .map_err(|error| format!("{action}失败：{error}"))
+}
+
+async fn request_text(response: Response, action: &str) -> Result<String, String> {
     if response.status().is_redirection() {
         return Err(format!("{action}时语雀返回重定向，QuePic 已拒绝继续请求。"));
     }
@@ -286,11 +297,8 @@ fn parse_yuque_url(raw_url: &str, require_document: bool) -> Result<YuqueLocatio
     if require_document && segments.len() < 3 {
         return Err("目标文档 URL 中缺少文档标识。".into());
     }
-
-    for segment in segments.iter().take(3) {
-        if !is_safe_path_segment(segment) {
-            return Err("语雀 URL 包含不支持的路径字符。".into());
-        }
+    if segments.iter().take(3).any(|segment| !is_safe_path_segment(segment)) {
+        return Err("语雀 URL 包含不支持的路径字符。".into());
     }
 
     Ok(YuqueLocation {
@@ -372,14 +380,15 @@ fn build_document_url(namespace: &str, slug: &str) -> Option<String> {
 
 fn extract_error_message(body: &str) -> Option<String> {
     let value: Value = serde_json::from_str(body).ok()?;
-    [
+    let message = [
         value.get("message"),
         value.get("error"),
         value.get("data").and_then(|data| data.get("message")),
     ]
     .into_iter()
     .flatten()
-    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned))
+    .find_map(|candidate| candidate.as_str().map(ToOwned::to_owned));
+    message
 }
 
 #[cfg(test)]
