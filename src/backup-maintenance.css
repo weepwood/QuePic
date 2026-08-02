@@ -1,0 +1,48 @@
+body[data-quepic-maintenance="true"] {
+  overflow: hidden;
+}
+
+.global-maintenance-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 24, 40, .72);
+  backdrop-filter: blur(8px);
+}
+
+.global-maintenance-card {
+  width: min(480px, calc(100vw - 40px));
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 34px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 18px;
+  color: #172033;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .28);
+  text-align: center;
+}
+
+.global-maintenance-card strong {
+  font-size: 18px;
+}
+
+.global-maintenance-card p {
+  margin: 0;
+  color: #4f5d73;
+  line-height: 1.65;
+}
+
+.global-maintenance-card small {
+  color: #8a5a18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-maintenance-overlay {
+    backdrop-filter: none;
+  }
+}
