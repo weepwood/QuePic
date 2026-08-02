@@ -178,10 +178,6 @@ export async function getCredentialStatus(accountName: string): Promise<Credenti
   return invoke<CredentialStatus>('credential_status', { accountName });
 }
 
-export async function getCookieValue(_accountName: string): Promise<never> {
-  throw new Error('为避免 Cookie 进入 JavaScript，QuePic 不再支持显示或复制完整 Cookie。请通过重新登录覆盖凭据，或直接清除凭据。');
-}
-
 export async function saveOpenApiToken(accountName: string, token: string): Promise<SecretStatus> {
   return invoke<SecretStatus>('save_openapi_token', { accountName, token });
 }
@@ -192,10 +188,6 @@ export async function clearOpenApiToken(accountName: string): Promise<void> {
 
 export async function getOpenApiTokenStatus(accountName: string): Promise<SecretStatus> {
   return invoke<SecretStatus>('openapi_token_status', { accountName });
-}
-
-export async function getOpenApiTokenValue(_accountName: string): Promise<never> {
-  throw new Error('为避免 OpenAPI Token 进入 JavaScript，QuePic 不再支持显示或复制完整 Token。请输入新 Token 覆盖，或直接清除 Token。');
 }
 
 export async function ensurePreview(
