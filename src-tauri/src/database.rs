@@ -1,4 +1,7 @@
-use std::{path::Path, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    path::Path,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -13,7 +16,7 @@ pub const UPLOAD_MINIMUM_INTERVAL_SECONDS: i64 = 25;
 const DEFAULT_CATEGORY: &str = "未分类";
 
 pub fn initialize(path: &Path) -> Result<(), String> {
-    let connection = open_connection(path)?;
+    let mut connection = open_connection(path)?;
     connection
         .execute_batch(
             r#"
@@ -21,7 +24,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
 
             CREATE TABLE IF NOT EXISTS assets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sha256 TEXT NOT NULL UNIQUE,
+                sha256 TEXT NOT NULL,
                 file_name TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -29,7 +32,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                 height INTEGER,
                 remote_url TEXT NOT NULL,
                 account_name TEXT NOT NULL,
-                uploaded_at TEXT NOT NULL
+                uploaded_at TEXT NOT NULL,
+                UNIQUE(account_name, sha256)
             );
 
             CREATE TABLE IF NOT EXISTS asset_previews (
@@ -56,12 +60,23 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                 attempted_at INTEGER NOT NULL,
                 succeeded INTEGER NOT NULL DEFAULT 0
             );
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
 
+    migrate_asset_hash_scope(&mut connection)?;
+
+    connection
+        .execute_batch(
+            r#"
             CREATE INDEX IF NOT EXISTS idx_assets_uploaded_at
             ON assets(uploaded_at DESC);
 
             CREATE INDEX IF NOT EXISTS idx_assets_file_name
             ON assets(file_name);
+
+            CREATE INDEX IF NOT EXISTS idx_assets_account_uploaded
+            ON assets(account_name, uploaded_at DESC);
 
             CREATE INDEX IF NOT EXISTS idx_asset_previews_status
             ON asset_previews(cache_status);
@@ -77,12 +92,31 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn find_by_hash(path: &Path, sha256: &str) -> Result<Option<AssetRecord>, String> {
-    query_one(path, "WHERE a.sha256 = ?1", rusqlite::params![sha256])
+pub fn find_by_hash_for_account(
+    path: &Path,
+    account_name: &str,
+    sha256: &str,
+) -> Result<Option<AssetRecord>, String> {
+    query_one(
+        path,
+        "WHERE a.account_name = ?1 AND a.sha256 = ?2",
+        rusqlite::params![account_name, sha256],
+    )
 }
 
 pub fn find_by_id(path: &Path, id: i64) -> Result<Option<AssetRecord>, String> {
     query_one(path, "WHERE a.id = ?1", rusqlite::params![id])
+}
+
+pub fn hash_reference_count(path: &Path, sha256: &str) -> Result<i64, String> {
+    let connection = open_connection(path)?;
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM assets WHERE sha256 = ?1",
+            [sha256],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn query_one<P>(path: &Path, clause: &str, parameters: P) -> Result<Option<AssetRecord>, String>
@@ -235,9 +269,17 @@ pub fn cache_stats(path: &Path) -> Result<CacheStats, String> {
             r#"
             SELECT
                 (SELECT COUNT(*) FROM assets),
-                COALESCE(SUM(CASE WHEN cache_status = 'ready' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN cache_status = 'ready' THEN cache_bytes ELSE 0 END), 0)
-            FROM asset_previews
+                (SELECT COUNT(*) FROM asset_previews WHERE cache_status = 'ready'),
+                COALESCE((
+                    SELECT SUM(cache_bytes)
+                    FROM (
+                        SELECT a.sha256, MAX(COALESCE(p.cache_bytes, 0)) AS cache_bytes
+                        FROM assets a
+                        JOIN asset_previews p ON p.asset_id = a.id
+                        WHERE p.cache_status = 'ready'
+                        GROUP BY a.sha256
+                    ) physical_cache
+                ), 0)
             "#,
             [],
             |row| {
@@ -314,6 +356,98 @@ pub fn mark_upload_attempt_success(path: &Path, attempt_id: i64) -> Result<(), S
     Ok(())
 }
 
+fn migrate_asset_hash_scope(connection: &mut Connection) -> Result<(), String> {
+    if !has_legacy_global_hash_uniqueness(connection)? {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .map_err(|error| error.to_string())?;
+
+    let migration_result = (|| {
+        let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        transaction
+            .execute_batch(
+                r#"
+                CREATE TABLE assets_account_scoped (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sha256 TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    remote_url TEXT NOT NULL,
+                    account_name TEXT NOT NULL,
+                    uploaded_at TEXT NOT NULL,
+                    UNIQUE(account_name, sha256)
+                );
+
+                INSERT INTO assets_account_scoped (
+                    id, sha256, file_name, mime_type, file_size, width, height,
+                    remote_url, account_name, uploaded_at
+                )
+                SELECT
+                    id, sha256, file_name, mime_type, file_size, width, height,
+                    remote_url, account_name, uploaded_at
+                FROM assets;
+
+                DROP TABLE assets;
+                ALTER TABLE assets_account_scoped RENAME TO assets;
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    })();
+
+    let enable_result = connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| error.to_string());
+    migration_result?;
+    enable_result?;
+
+    let violation: Option<String> = connection
+        .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(table) = violation {
+        return Err(format!("多账号图片索引迁移后外键检查失败：{table}"));
+    }
+    Ok(())
+}
+
+fn has_legacy_global_hash_uniqueness(connection: &Connection) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare("PRAGMA index_list('assets')")
+        .map_err(|error| error.to_string())?;
+    let indexes = statement
+        .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(2)?)))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+
+    for (name, unique) in indexes {
+        if unique == 0 {
+            continue;
+        }
+        let escaped = name.replace('\'', "''");
+        let mut info = connection
+            .prepare(&format!("PRAGMA index_info('{escaped}')"))
+            .map_err(|error| error.to_string())?;
+        let columns = info
+            .query_map([], |row| row.get::<_, String>(2))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if columns == ["sha256"] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn open_connection(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|error| error.to_string())?;
     connection
@@ -366,7 +500,11 @@ fn map_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
 
 fn normalized_category(value: &str) -> String {
     let value = value.trim();
-    if value.is_empty() { DEFAULT_CATEGORY.to_string() } else { value.to_string() }
+    if value.is_empty() {
+        DEFAULT_CATEGORY.to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 fn unix_timestamp() -> i64 {
@@ -381,11 +519,14 @@ mod tests {
     use super::*;
 
     fn temporary_database() -> std::path::PathBuf {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!("quepic-db-{unique}.sqlite"))
     }
 
-    fn test_asset() -> AssetRecord {
+    fn test_asset(account_name: &str) -> AssetRecord {
         AssetRecord {
             id: 0,
             sha256: "a".repeat(64),
@@ -394,8 +535,8 @@ mod tests {
             file_size: 128,
             width: Some(16),
             height: Some(16),
-            remote_url: "https://cdn.nlark.com/yuque/test.png".into(),
-            account_name: "default".into(),
+            remote_url: format!("https://cdn.nlark.com/yuque/{account_name}/test.png"),
+            account_name: account_name.into(),
             uploaded_at: "2026-07-27T00:00:00Z".into(),
             category: "测试".into(),
             original_path: None,
@@ -418,10 +559,61 @@ mod tests {
     fn stores_and_updates_categories() {
         let path = temporary_database();
         initialize(&path).unwrap();
-        let asset = insert_asset(&path, &test_asset()).unwrap();
+        let asset = insert_asset(&path, &test_asset("default")).unwrap();
         assert_eq!(asset.category, "测试");
         let updated = update_asset_category(&path, asset.id, "截图").unwrap();
         assert_eq!(updated.category, "截图");
+        cleanup_database(&path);
+    }
+
+    #[test]
+    fn scopes_duplicate_hashes_by_account() {
+        let path = temporary_database();
+        initialize(&path).unwrap();
+        let first = insert_asset(&path, &test_asset("个人")).unwrap();
+        let second = insert_asset(&path, &test_asset("工作")).unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(insert_asset(&path, &test_asset("个人")).is_err());
+        assert_eq!(hash_reference_count(&path, &first.sha256).unwrap(), 2);
+        cleanup_database(&path);
+    }
+
+    #[test]
+    fn migrates_global_hash_uniqueness_to_account_scope() {
+        let path = temporary_database();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sha256 TEXT NOT NULL UNIQUE,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    remote_url TEXT NOT NULL,
+                    account_name TEXT NOT NULL,
+                    uploaded_at TEXT NOT NULL
+                );
+                INSERT INTO assets (
+                    sha256, file_name, mime_type, file_size, remote_url, account_name, uploaded_at
+                ) VALUES (
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    'old.png', 'image/png', 12,
+                    'https://cdn.nlark.com/yuque/old.png', '个人', '2026-07-27T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        initialize(&path).unwrap();
+        assert!(find_by_hash_for_account(&path, "个人", &"a".repeat(64))
+            .unwrap()
+            .is_some());
+        assert!(insert_asset(&path, &test_asset("工作")).is_ok());
         cleanup_database(&path);
     }
 
