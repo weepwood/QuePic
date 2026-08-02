@@ -1,0 +1,75 @@
+name: Check QuePic v0.7.0 Release
+
+on:
+  push:
+    branches: [release/v0.7.0]
+    paths: [.github/workflows/check-release-v070.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v0.7.0
+
+      - name: Wait for release and collect status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: 00d444cc898f9bf8a557bb2920896747786b1376
+          RELEASE_TAG: v0.7.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_json=''
+          for _ in $(seq 1 80); do
+            runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}&per_page=20")"
+            run_json="$(jq -c '[.workflow_runs[] | select(.name == "Release")][0] // empty' <<<"$runs")"
+            if [[ -n "$run_json" ]] && [[ "$(jq -r '.status' <<<"$run_json")" == "completed" ]]; then
+              break
+            fi
+            sleep 15
+          done
+
+          if [[ -z "$run_json" ]]; then
+            jq -n --arg checked_at "$(date -u +%FT%TZ)" '{checked_at:$checked_at,error:"Release workflow run not found"}' > release-status-v0.7.0.json
+          else
+            run_id="$(jq -r '.id' <<<"$run_json")"
+            jobs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100")"
+            release='{}'
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > /tmp/release.json 2>/dev/null; then
+              release="$(cat /tmp/release.json)"
+            fi
+            jq -n \
+              --arg checked_at "$(date -u +%FT%TZ)" \
+              --argjson run "$run_json" \
+              --argjson jobs "$jobs" \
+              --argjson release "$release" \
+              '{
+                checked_at:$checked_at,
+                workflow:{id:$run.id,status:$run.status,conclusion:$run.conclusion,html_url:$run.html_url},
+                jobs:[$jobs.jobs[] | {name,status,conclusion,html_url}],
+                release:(if ($release.id // null) then {
+                  id:$release.id,
+                  tag_name:$release.tag_name,
+                  name:$release.name,
+                  draft:$release.draft,
+                  prerelease:$release.prerelease,
+                  html_url:$release.html_url,
+                  published_at:$release.published_at,
+                  assets:[$release.assets[] | {name,size,download_count,browser_download_url}]
+                } else null end)
+              }' > release-status-v0.7.0.json
+          fi
+
+      - name: Commit status snapshot
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add release-status-v0.7.0.json
+          git commit -m "chore: record v0.7.0 release status" || exit 0
+          git push origin HEAD:release/v0.7.0
