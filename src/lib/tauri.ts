@@ -12,12 +12,6 @@ import type {
   YuqueDocumentResult,
 } from '../types';
 
-const DEFAULT_ACCOUNT = 'default';
-
-function activeAccountName(): string {
-  return localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
-}
-
 function resolveImageMimeType(file: File): string {
   if (file.type.startsWith('image/')) return file.type;
   const extension = file.name.split('.').pop()?.toLowerCase();
