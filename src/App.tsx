@@ -1242,7 +1242,7 @@ await refreshAccountStatus(item.accountName);
                   <button className="detail-backdrop" aria-label="关闭图片详情" onClick={() => setSelected(null)} />
                   <aside className="detail" aria-label="图片详情">
                     <button className="detail-close" aria-label="关闭图片详情" onClick={() => setSelected(null)}><X size={17} /></button>
-                    <AssetPreview asset={selected} preferOriginal allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" onCacheChanged={handlePreviewCached} />
+                    <AssetPreview asset={selected} allowWordpressFallback={allowWordpressFallback} cacheEpoch={cacheEpoch} className="detail-preview" onCacheChanged={handlePreviewCached} />
                     <div className="detail-body">
                       <span>IMAGE DETAILS</span><h3>{selected.file_name}</h3>
                       <dl>
@@ -1259,7 +1259,7 @@ await refreshAccountStatus(item.accountName);
                       <button className="button secondary" onClick={() => setOriginalViewerAsset(selected)}><Maximize2 size={16} />原图显示</button>
                       <button className="button secondary" onClick={() => void copyText(selected.remote_url)}><Copy size={16} />复制 URL</button>
                       <button className="button secondary" onClick={() => void copyText(`![${selected.file_name}](${selected.remote_url})`)}><Copy size={16} />复制 Markdown</button>
-                      <button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开</button>
+                      <button className="button secondary" onClick={() => window.open(selected.remote_url, '_blank')}><ExternalLink size={16} />浏览器打开（可能下载）</button>
                       <button className="button danger" onClick={() => void handleDeleteAsset(selected)}><Trash2 size={16} />删除本地记录和缓存</button>
                       <p>删除操作不会删除语雀服务器上的远程图片。</p>
                     </div>

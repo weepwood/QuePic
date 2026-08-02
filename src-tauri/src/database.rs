@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -133,7 +134,9 @@ where
 
 pub fn insert_asset(path: &Path, asset: &AssetRecord) -> Result<AssetRecord, String> {
     let mut connection = open_connection(path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             r#"
@@ -191,6 +194,27 @@ pub fn upsert_cached_preview(
     source: &str,
 ) -> Result<(), String> {
     let connection = open_connection(path)?;
+    let existing = connection
+        .query_row(
+            "SELECT original_path, thumbnail_path FROM asset_previews WHERE asset_id = ?1",
+            [asset_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let original_path = preview.original_path.clone().or(existing.0);
+    let thumbnail_path = preview.thumbnail_path.clone().or(existing.1);
+    if original_path.is_none() && thumbnail_path.is_none() {
+        return Err("图片缓存没有可用文件。".into());
+    }
+    let cache_bytes = combined_cache_bytes(original_path.as_deref(), thumbnail_path.as_deref());
+
     connection
         .execute(
             r#"
@@ -209,15 +233,31 @@ pub fn upsert_cached_preview(
             "#,
             params![
                 asset_id,
-                &preview.original_path,
-                &preview.thumbnail_path,
+                original_path,
+                thumbnail_path,
                 source,
-                preview.cache_bytes,
+                cache_bytes,
                 &preview.cached_at,
             ],
         )
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn combined_cache_bytes(original_path: Option<&str>, thumbnail_path: Option<&str>) -> i64 {
+    let original_bytes = original_path
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let thumbnail_bytes = if original_path == thumbnail_path {
+        0
+    } else {
+        thumbnail_path
+            .and_then(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    };
+    i64::try_from(original_bytes.saturating_add(thumbnail_bytes)).unwrap_or(i64::MAX)
 }
 
 pub fn mark_preview_error(path: &Path, asset_id: i64, error: &str) -> Result<(), String> {
@@ -228,8 +268,14 @@ pub fn mark_preview_error(path: &Path, asset_id: i64, error: &str) -> Result<(),
             INSERT INTO asset_previews (asset_id, preview_source, cache_status, last_error)
             VALUES (?1, 'missing', 'error', ?2)
             ON CONFLICT(asset_id) DO UPDATE SET
-                preview_source = 'missing',
-                cache_status = 'error',
+                preview_source = CASE
+                    WHEN original_path IS NULL AND thumbnail_path IS NULL THEN 'missing'
+                    ELSE preview_source
+                END,
+                cache_status = CASE
+                    WHEN original_path IS NULL AND thumbnail_path IS NULL THEN 'error'
+                    ELSE 'ready'
+                END,
                 last_error = excluded.last_error
             "#,
             params![asset_id, error],
@@ -241,9 +287,14 @@ pub fn mark_preview_error(path: &Path, asset_id: i64, error: &str) -> Result<(),
 pub fn list_assets(path: &Path) -> Result<Vec<AssetRecord>, String> {
     let connection = open_connection(path)?;
     let sql = format!("{} ORDER BY a.uploaded_at DESC, a.id DESC", asset_select());
-    let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], map_asset).map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], map_asset)
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 pub fn delete_asset(path: &Path, id: i64) -> Result<(), String> {
@@ -297,7 +348,10 @@ pub fn upload_quota_status(path: &Path, account_name: &str) -> Result<UploadQuot
     let connection = open_connection(path)?;
     let now = unix_timestamp();
     connection
-        .execute("DELETE FROM upload_attempts WHERE attempted_at < ?1", [now - 86_400])
+        .execute(
+            "DELETE FROM upload_attempts WHERE attempted_at < ?1",
+            [now - 86_400],
+        )
         .map_err(|error| error.to_string())?;
 
     let (used, oldest, newest): (i64, Option<i64>, Option<i64>) = connection
@@ -314,7 +368,9 @@ pub fn upload_quota_status(path: &Path, account_name: &str) -> Result<UploadQuot
 
     let remaining = (UPLOAD_HOURLY_LIMIT - used).max(0);
     let hourly_wait = if used >= UPLOAD_HOURLY_LIMIT {
-        oldest.map(|value| (value + 3_600 - now).max(1)).unwrap_or(1)
+        oldest
+            .map(|value| (value + 3_600 - now).max(1))
+            .unwrap_or(1)
     } else {
         0
     };
@@ -351,7 +407,10 @@ pub fn record_upload_attempt(path: &Path, account_name: &str) -> Result<i64, Str
 pub fn mark_upload_attempt_success(path: &Path, attempt_id: i64) -> Result<(), String> {
     let connection = open_connection(path)?;
     connection
-        .execute("UPDATE upload_attempts SET succeeded = 1 WHERE id = ?1", [attempt_id])
+        .execute(
+            "UPDATE upload_attempts SET succeeded = 1 WHERE id = ?1",
+            [attempt_id],
+        )
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -366,7 +425,9 @@ fn migrate_asset_hash_scope(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let migration_result = (|| {
-        let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
         transaction
             .execute_batch(
                 r#"
@@ -422,7 +483,9 @@ fn has_legacy_global_hash_uniqueness(connection: &Connection) -> Result<bool, St
         .prepare("PRAGMA index_list('assets')")
         .map_err(|error| error.to_string())?;
     let indexes = statement
-        .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(2)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;

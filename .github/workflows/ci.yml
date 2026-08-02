@@ -11,36 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-original-cache-fix:
-    name: Apply original cache review fix
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-      - name: Apply reviewed source changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f .quepic-run-original-cache-fix ]; then
-            echo "No original cache fix requested."
-            exit 0
-          fi
-          python scripts/apply_original_cache_review_fix.py
-          rustup default stable > /dev/null
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          git checkout f5f4d3069a0563f881b24d413adb39d7f1399171 -- .github/workflows/ci.yml
-          rm -f scripts/apply_original_cache_review_fix.py .quepic-run-original-cache-fix
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: 保留真实原图并拆分预览缓存"
-          git push origin HEAD:${GITHUB_HEAD_REF}
-
   frontend:
     name: React frontend
     runs-on: ubuntu-latest

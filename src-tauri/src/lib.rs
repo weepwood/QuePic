@@ -250,7 +250,7 @@ async fn ensure_preview(
             .await
         {
             Ok(downloaded) => {
-                let preview = cache_and_record_task(
+                let cached = cache_preview_variant_task(
                     cache_lock.clone(),
                     preview_cache_dir.clone(),
                     database_path.clone(),
@@ -259,26 +259,28 @@ async fn ensure_preview(
                     downloaded.mime_type,
                     downloaded.bytes,
                     "remote_url".into(),
+                    prefer_original,
                 )
                 .await?;
-                let path = if prefer_original {
-                    preview.original_path
-                } else {
-                    preview.thumbnail_path
-                };
+                let path = cached_path(&cached, prefer_original)?;
                 return Ok(local_preview_result(asset_id, path, "remote_url"));
             }
             Err(error) => error,
         };
 
+    let session_url = if prefer_original {
+        remote_preview::original_image_url(&asset.remote_url)?
+    } else {
+        asset.remote_url.clone()
+    };
     let session_result = match credentials::load(&asset.account_name) {
-        Ok(cookie) => yuque::download_image(&cookie, &asset.remote_url).await,
+        Ok(cookie) => yuque::download_image(&cookie, &session_url).await,
         Err(error) => Err(error),
     };
 
     match session_result {
         Ok(downloaded) => {
-            let preview = cache_and_record_task(
+            let cached = cache_preview_variant_task(
                 cache_lock,
                 preview_cache_dir,
                 database_path.clone(),
@@ -287,25 +289,17 @@ async fn ensure_preview(
                 downloaded.mime_type,
                 downloaded.bytes,
                 "yuque_session".into(),
+                prefer_original,
             )
             .await?;
-            let path = if prefer_original {
-                preview.original_path
-            } else {
-                preview.thumbnail_path
-            };
+            let path = cached_path(&cached, prefer_original)?;
             Ok(local_preview_result(asset_id, path, "yuque_session"))
         }
         Err(session_error) => {
             let combined_error = format!("{public_error}；语雀会话回源失败：{session_error}");
             let _ = database::mark_preview_error(&database_path, asset_id, &combined_error);
-            if allow_wordpress_fallback {
-                let width = if prefer_original {
-                    Some(1_024)
-                } else {
-                    Some(640)
-                };
-                let proxy_url = yuque::wordpress_proxy_url(&asset.remote_url, width)?;
+            if allow_wordpress_fallback && !prefer_original {
+                let proxy_url = yuque::wordpress_proxy_url(&asset.remote_url, Some(640))?;
                 return Ok(PreviewResult {
                     asset_id,
                     local_path: None,
@@ -337,7 +331,7 @@ fn save_original_image(
     let source = asset
         .original_path
         .as_deref()
-        .filter(|path| Path::new(path).is_file())
+        .filter(|path| preview::original_exists(Some(path)))
         .ok_or_else(|| "原图尚未缓存，请先打开“原图显示”，等待加载完成后再保存。".to_string())?;
     let file_name = sanitize_file_name(&asset.file_name)?;
     let extension = Path::new(source)
@@ -355,7 +349,10 @@ fn save_original_image(
         dialog.blocking_save_file()
     };
     let Some(selected) = selected else {
-        return Ok(SaveOriginalResult { cancelled: true, path: None });
+        return Ok(SaveOriginalResult {
+            cancelled: true,
+            path: None,
+        });
     };
     let mut target = selected
         .into_path()
@@ -366,8 +363,7 @@ fn save_original_image(
         }
     }
     if Path::new(source) != target {
-        fs::copy(source, &target)
-            .map_err(|error| format!("保存原图失败：{error}"))?;
+        fs::copy(source, &target).map_err(|error| format!("保存原图失败：{error}"))?;
     }
     Ok(SaveOriginalResult {
         cancelled: false,
@@ -526,17 +522,14 @@ async fn reuse_existing_asset(
     cache_bytes: Vec<u8>,
 ) -> Result<UploadResult, String> {
     let existing = database::update_asset_category(&database_path, existing.id, &category)?;
-    let preview_missing = {
+    let original_missing = {
         let _guard = cache_lock
             .lock()
             .map_err(|_| "图片缓存锁已损坏，请重启 QuePic。".to_string())?;
-        !preview::preview_exists(
-            existing.original_path.as_deref(),
-            existing.thumbnail_path.as_deref(),
-        )
+        !preview::original_exists(existing.original_path.as_deref())
     };
 
-    if preview_missing {
+    if original_missing {
         let _ = cache_and_record_task(
             cache_lock,
             preview_cache_dir,
@@ -567,6 +560,93 @@ async fn cache_and_record_task(
     bytes: Vec<u8>,
     source: String,
 ) -> Result<CachedPreview, String> {
+    cache_preview_task(
+        cache_lock,
+        cache_dir,
+        database_path,
+        asset_id,
+        sha256,
+        mime_type,
+        bytes,
+        source,
+        true,
+    )
+    .await
+}
+
+async fn cache_thumbnail_and_record_task(
+    cache_lock: Arc<Mutex<()>>,
+    cache_dir: PathBuf,
+    database_path: PathBuf,
+    asset_id: i64,
+    sha256: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    source: String,
+) -> Result<CachedPreview, String> {
+    cache_preview_task(
+        cache_lock,
+        cache_dir,
+        database_path,
+        asset_id,
+        sha256,
+        mime_type,
+        bytes,
+        source,
+        false,
+    )
+    .await
+}
+
+async fn cache_preview_variant_task(
+    cache_lock: Arc<Mutex<()>>,
+    cache_dir: PathBuf,
+    database_path: PathBuf,
+    asset_id: i64,
+    sha256: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    source: String,
+    original: bool,
+) -> Result<CachedPreview, String> {
+    if original {
+        cache_and_record_task(
+            cache_lock,
+            cache_dir,
+            database_path,
+            asset_id,
+            sha256,
+            mime_type,
+            bytes,
+            source,
+        )
+        .await
+    } else {
+        cache_thumbnail_and_record_task(
+            cache_lock,
+            cache_dir,
+            database_path,
+            asset_id,
+            sha256,
+            mime_type,
+            bytes,
+            source,
+        )
+        .await
+    }
+}
+
+async fn cache_preview_task(
+    cache_lock: Arc<Mutex<()>>,
+    cache_dir: PathBuf,
+    database_path: PathBuf,
+    asset_id: i64,
+    sha256: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    source: String,
+    original: bool,
+) -> Result<CachedPreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = cache_lock
             .lock()
@@ -574,13 +654,32 @@ async fn cache_and_record_task(
         if database::find_by_id(&database_path, asset_id)?.is_none() {
             return Err("图片记录已删除，已取消建立缓存。".into());
         }
-        let cached = preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)?;
+        let cached = if original {
+            preview::cache_image(&cache_dir, &sha256, &mime_type, &bytes)?
+        } else {
+            preview::cache_thumbnail(&cache_dir, &sha256, &mime_type, &bytes)?
+        };
         database::upsert_cached_preview(&database_path, asset_id, &cached, &source)
             .map_err(|error| format!("图片缓存已生成，但保存缓存索引失败：{error}"))?;
         Ok(cached)
     })
     .await
     .map_err(|error| format!("建立图片缓存任务失败：{error}"))?
+}
+
+fn cached_path(preview: &CachedPreview, prefer_original: bool) -> Result<String, String> {
+    let path = if prefer_original {
+        preview.original_path.as_ref()
+    } else {
+        preview.thumbnail_path.as_ref()
+    };
+    path.cloned().ok_or_else(|| {
+        if prefer_original {
+            "原图缓存没有生成有效文件。".to_string()
+        } else {
+            "图片预览缓存没有生成有效文件。".to_string()
+        }
+    })
 }
 
 fn shared_cache_stats(path: &Path) -> Result<CacheStats, String> {
@@ -612,7 +711,7 @@ fn existing_local_path(asset: &AssetRecord, prefer_original: bool) -> Option<Str
         return asset
             .original_path
             .as_deref()
-            .filter(|path| Path::new(path).is_file())
+            .filter(|path| preview::original_exists(Some(path)))
             .map(ToOwned::to_owned);
     }
 

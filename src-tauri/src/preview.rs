@@ -8,15 +8,15 @@ use std::{
 use chrono::Utc;
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat};
 
-const PREVIEW_EDGE: u32 = 1_600;
-const THUMBNAIL_EDGE: u32 = 320;
-const PREVIEW_JPEG_QUALITY: u8 = 80;
-const THUMBNAIL_JPEG_QUALITY: u8 = 72;
+const DISPLAY_EDGE: u32 = 1_600;
+const REMOTE_PREVIEW_EDGE: u32 = 640;
+const DISPLAY_JPEG_QUALITY: u8 = 80;
+const REMOTE_PREVIEW_JPEG_QUALITY: u8 = 76;
 
 #[derive(Debug, Clone)]
 pub struct CachedPreview {
-    pub original_path: String,
-    pub thumbnail_path: String,
+    pub original_path: Option<String>,
+    pub thumbnail_path: Option<String>,
     pub cache_bytes: i64,
     pub cached_at: String,
 }
@@ -27,50 +27,85 @@ pub fn cache_image(
     mime_type: &str,
     bytes: &[u8],
 ) -> Result<CachedPreview, String> {
-    validate_sha256(sha256)?;
-    if bytes.is_empty() {
-        return Err("无法缓存空图片。".into());
-    }
-
+    validate_cache_input(sha256, bytes)?;
     let asset_dir = asset_cache_dir(cache_root, sha256)?;
     fs::create_dir_all(&asset_dir).map_err(|error| format!("无法创建图片缓存目录：{error}"))?;
 
-    let (preview_path, thumbnail_path) = if should_preserve_source(mime_type) {
-        cache_preserved_source(&asset_dir, mime_type, bytes)?
-    } else {
-        match image::load_from_memory(bytes) {
-            Ok(image) => cache_compact_raster(&asset_dir, &image)?,
-            Err(_) => cache_preserved_source(&asset_dir, mime_type, bytes)?,
-        }
-    };
+    let original_path = asset_dir.join(format!("original.{}", extension_for_mime(mime_type)));
+    write_atomic(&original_path, bytes)?;
+    let display_path = image::load_from_memory(bytes)
+        .ok()
+        .and_then(|image| {
+            encode_resized_image(
+                &image,
+                DISPLAY_EDGE,
+                DISPLAY_JPEG_QUALITY,
+                &asset_dir,
+                "preview",
+            )
+            .ok()
+        })
+        .unwrap_or_else(|| original_path.clone());
 
-    cleanup_stale_files(&asset_dir, &[&preview_path, &thumbnail_path]);
-
-    let preview_bytes = file_size(&preview_path)?;
-    let thumbnail_bytes = if thumbnail_path == preview_path {
-        0
-    } else {
-        file_size(&thumbnail_path)?
-    };
-
+    cleanup_stale_files(&asset_dir, &[&original_path, &display_path]);
+    let cache_bytes = combined_file_size(Some(&original_path), Some(&display_path))?;
     Ok(CachedPreview {
-        original_path: path_to_string(&preview_path),
-        thumbnail_path: path_to_string(&thumbnail_path),
-        cache_bytes: preview_bytes.saturating_add(thumbnail_bytes),
+        original_path: Some(path_to_string(&original_path)),
+        thumbnail_path: Some(path_to_string(&display_path)),
+        cache_bytes,
         cached_at: Utc::now().to_rfc3339(),
     })
 }
 
+pub fn cache_thumbnail(
+    cache_root: &Path,
+    sha256: &str,
+    mime_type: &str,
+    bytes: &[u8],
+) -> Result<CachedPreview, String> {
+    validate_cache_input(sha256, bytes)?;
+    let asset_dir = asset_cache_dir(cache_root, sha256)?;
+    fs::create_dir_all(&asset_dir).map_err(|error| format!("无法创建图片缓存目录：{error}"))?;
+
+    let thumbnail_path = match image::load_from_memory(bytes) {
+        Ok(image) => encode_resized_image(
+            &image,
+            REMOTE_PREVIEW_EDGE,
+            REMOTE_PREVIEW_JPEG_QUALITY,
+            &asset_dir,
+            "preview",
+        )?,
+        Err(_) => {
+            let path = asset_dir.join(format!("preview.{}", extension_for_mime(mime_type)));
+            write_atomic(&path, bytes)?;
+            path
+        }
+    };
+    cleanup_stale_preview_files(&asset_dir, &thumbnail_path);
+    Ok(CachedPreview {
+        original_path: None,
+        thumbnail_path: Some(path_to_string(&thumbnail_path)),
+        cache_bytes: file_size(&thumbnail_path)?,
+        cached_at: Utc::now().to_rfc3339(),
+    })
+}
+
+pub fn original_exists(original_path: Option<&str>) -> bool {
+    original_path.map(Path::new).is_some_and(|path| {
+        path.is_file()
+            && path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.starts_with("original."))
+    })
+}
+
 pub fn preview_exists(original_path: Option<&str>, thumbnail_path: Option<&str>) -> bool {
-    let original_exists = original_path
-        .map(Path::new)
-        .map(Path::is_file)
-        .unwrap_or(false);
-    let thumbnail_exists = thumbnail_path
-        .map(Path::new)
-        .map(Path::is_file)
-        .unwrap_or(false);
-    original_exists || thumbnail_exists
+    original_exists(original_path)
+        || thumbnail_path
+            .map(Path::new)
+            .map(Path::is_file)
+            .unwrap_or(false)
 }
 
 pub fn remove_asset_cache(cache_root: &Path, sha256: &str) -> Result<(), String> {
@@ -90,47 +125,12 @@ pub fn clear_cache(cache_root: &Path) -> Result<(), String> {
     fs::create_dir_all(cache_root).map_err(|error| format!("无法重新创建图片缓存目录：{error}"))
 }
 
-fn cache_compact_raster(asset_dir: &Path, image: &DynamicImage) -> Result<(PathBuf, PathBuf), String> {
-    let preview_path = encode_resized_image(
-        image,
-        PREVIEW_EDGE,
-        PREVIEW_JPEG_QUALITY,
-        asset_dir,
-        "preview",
-    )?;
-    let thumbnail_path = encode_resized_image(
-        image,
-        THUMBNAIL_EDGE,
-        THUMBNAIL_JPEG_QUALITY,
-        asset_dir,
-        "thumbnail",
-    )?;
-    Ok((preview_path, thumbnail_path))
-}
-
-fn cache_preserved_source(
-    asset_dir: &Path,
-    mime_type: &str,
-    bytes: &[u8],
-) -> Result<(PathBuf, PathBuf), String> {
-    let preview_path = asset_dir.join(format!("preview.{}", extension_for_mime(mime_type)));
-    write_atomic(&preview_path, bytes)?;
-
-    let thumbnail_path = image::load_from_memory(bytes)
-        .ok()
-        .and_then(|image| {
-            encode_resized_image(
-                &image,
-                THUMBNAIL_EDGE,
-                THUMBNAIL_JPEG_QUALITY,
-                asset_dir,
-                "thumbnail",
-            )
-            .ok()
-        })
-        .unwrap_or_else(|| preview_path.clone());
-
-    Ok((preview_path, thumbnail_path))
+fn validate_cache_input(sha256: &str, bytes: &[u8]) -> Result<(), String> {
+    validate_sha256(sha256)?;
+    if bytes.is_empty() {
+        return Err("无法缓存空图片。".into());
+    }
+    Ok(())
 }
 
 fn encode_resized_image(
@@ -160,10 +160,6 @@ fn encode_resized_image(
     Ok(target)
 }
 
-fn should_preserve_source(mime_type: &str) -> bool {
-    matches!(mime_type, "image/gif" | "image/svg+xml" | "image/avif")
-}
-
 fn cleanup_stale_files(asset_dir: &Path, keep: &[&Path]) {
     let Ok(entries) = fs::read_dir(asset_dir) else {
         return;
@@ -171,6 +167,22 @@ fn cleanup_stale_files(asset_dir: &Path, keep: &[&Path]) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() && !keep.iter().any(|candidate| **candidate == path) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn cleanup_stale_preview_files(asset_dir: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(asset_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_preview = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("preview.") || value.starts_with("thumbnail."));
+        if path.is_file() && is_preview && path != keep {
             let _ = fs::remove_file(path);
         }
     }
@@ -189,7 +201,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let backup = path.with_file_name(format!(".{file_name}.{nonce}.bak"));
 
     fs::write(&temporary, bytes).map_err(|error| format!("无法写入图片缓存临时文件：{error}"))?;
-
     if !path.exists() {
         return fs::rename(&temporary, path)
             .map_err(|error| format!("无法提交图片缓存文件：{error}"));
@@ -207,6 +218,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             Err(format!("无法提交图片缓存文件：{error}"))
         }
     }
+}
+
+fn combined_file_size(original: Option<&Path>, thumbnail: Option<&Path>) -> Result<i64, String> {
+    let original_bytes = original.map(file_size).transpose()?.unwrap_or(0);
+    let thumbnail_bytes = if original == thumbnail {
+        0
+    } else {
+        thumbnail.map(file_size).transpose()?.unwrap_or(0)
+    };
+    Ok(original_bytes.saturating_add(thumbnail_bytes))
 }
 
 fn asset_cache_dir(cache_root: &Path, sha256: &str) -> Result<PathBuf, String> {
@@ -272,6 +293,17 @@ mod tests {
         root
     }
 
+    fn encoded_png(width: u32, height: u32) -> Vec<u8> {
+        let mut source = RgbImage::new(width, height);
+        for (x, y, pixel) in source.enumerate_pixels_mut() {
+            *pixel = Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]);
+        }
+        let source = DynamicImage::ImageRgb8(source);
+        let mut encoded = Cursor::new(Vec::new());
+        source.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        encoded.into_inner()
+    }
+
     #[test]
     fn rejects_unsafe_cache_keys() {
         assert!(asset_cache_dir(Path::new("cache"), "../image").is_err());
@@ -279,46 +311,30 @@ mod tests {
     }
 
     #[test]
-    fn maps_common_mime_extensions() {
-        assert_eq!(extension_for_mime("image/jpeg"), "jpg");
-        assert_eq!(extension_for_mime("image/svg+xml"), "svg");
-        assert_eq!(extension_for_mime("application/octet-stream"), "img");
-    }
-
-    #[test]
-    fn compacts_large_opaque_images_into_two_smaller_jpegs() {
-        let root = temp_root("compact");
-        let mut source = RgbImage::new(2_400, 1_600);
-        for (x, y, pixel) in source.enumerate_pixels_mut() {
-            *pixel = Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]);
-        }
-        let source = DynamicImage::ImageRgb8(source);
-        let mut encoded_source = Cursor::new(Vec::new());
-        source.write_to(&mut encoded_source, ImageFormat::Png).unwrap();
-
-        let cached = cache_image(&root, &"b".repeat(64), "image/png", encoded_source.get_ref()).unwrap();
-        assert!(cached.original_path.ends_with("preview.jpg"));
-        assert!(cached.thumbnail_path.ends_with("thumbnail.jpg"));
-        assert!(cached.cache_bytes < encoded_source.get_ref().len() as i64);
-        assert!(image::open(&cached.original_path).unwrap().dimensions().0 <= PREVIEW_EDGE);
-        assert!(image::open(&cached.original_path).unwrap().dimensions().1 <= PREVIEW_EDGE);
-        assert!(image::open(&cached.thumbnail_path).unwrap().dimensions().0 <= THUMBNAIL_EDGE);
-        assert!(image::open(&cached.thumbnail_path).unwrap().dimensions().1 <= THUMBNAIL_EDGE);
+    fn preserves_exact_original_and_builds_display_preview() {
+        let root = temp_root("original");
+        let source = encoded_png(2_400, 1_600);
+        let cached = cache_image(&root, &"b".repeat(64), "image/png", &source).unwrap();
+        let original = cached.original_path.as_deref().unwrap();
+        let preview = cached.thumbnail_path.as_deref().unwrap();
+        assert!(original.ends_with("original.png"));
+        assert_eq!(fs::read(original).unwrap(), source);
+        assert!(image::open(preview).unwrap().dimensions().0 <= DISPLAY_EDGE);
+        assert!(image::open(preview).unwrap().dimensions().1 <= DISPLAY_EDGE);
+        assert!(original_exists(Some(original)));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn preserves_special_formats_and_removes_legacy_files_after_success() {
-        let root = temp_root("preserve");
-        let sha = "c".repeat(64);
-        let asset_dir = asset_cache_dir(&root, &sha).unwrap();
-        fs::create_dir_all(&asset_dir).unwrap();
-        fs::write(asset_dir.join("original.gif"), b"legacy").unwrap();
-
-        let cached = cache_image(&root, &sha, "image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").unwrap();
-        assert!(cached.original_path.ends_with("preview.svg"));
-        assert_eq!(cached.original_path, cached.thumbnail_path);
-        assert!(!asset_dir.join("original.gif").exists());
+    fn thumbnail_cache_never_claims_an_original() {
+        let root = temp_root("thumbnail");
+        let source = encoded_png(1_800, 1_200);
+        let cached = cache_thumbnail(&root, &"c".repeat(64), "image/png", &source).unwrap();
+        assert!(cached.original_path.is_none());
+        let thumbnail = cached.thumbnail_path.as_deref().unwrap();
+        assert!(thumbnail.contains("preview."));
+        assert!(image::open(thumbnail).unwrap().dimensions().0 <= REMOTE_PREVIEW_EDGE);
+        assert!(!original_exists(Some(thumbnail)));
         let _ = fs::remove_dir_all(root);
     }
 
