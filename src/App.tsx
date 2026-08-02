@@ -296,6 +296,18 @@ export default function App() {
     return value;
   };
 
+  const handleAccountNameBlur = () => {
+    const previous = localStorage.getItem('quepic-account')?.trim() || DEFAULT_ACCOUNT;
+    const next = accountName.trim() || DEFAULT_ACCOUNT;
+    setAccountName(next);
+    localStorage.setItem('quepic-account', next);
+    if (next !== previous) {
+      window.location.reload();
+      return;
+    }
+    void refreshAccountStatus();
+  };
+
   const handleOpenYuqueLogin = async () => {
     if (!accountName.trim()) return showToast('error', '请先填写账号名称。');
     setLoginBusy(true);
@@ -693,7 +705,7 @@ export default function App() {
               <div className="settings-stack">
                 <div className="panel settings-panel">
                   <div className="panel-heading"><div><span>YUQUE ACCOUNT</span><h2>语雀登录</h2><p>登录会话用于上传图片，以及私有图片回源。</p></div><div className={credentialReady ? 'status ready-status' : 'status'}>{credentialReady ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}{credentialReady ? '已连接' : '未连接'}</div></div>
-                  <label className="field"><span>账号名称</span><input value={accountName} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setAccountName(event.target.value)} onBlur={() => { persistAccount(); void refreshAccountStatus(); }} placeholder="default" /><small>Cookie、Token 和上传额度均按账号隔离。</small></label>
+                  <label className="field"><span>账号名称</span><input value={accountName} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setAccountName(event.target.value)} onBlur={handleAccountNameBlur} placeholder="default" /><small>Cookie、Token 和上传额度均按账号隔离；账号变化后应用会统一切换上下文。</small></label>
                   <div className="actions">
                     <button className="button primary" disabled={loginBusy || !accountName.trim()} onClick={() => void handleOpenYuqueLogin()}>{loginBusy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录语雀</button>
                     <button className="button secondary" disabled={loginBusy || !accountName.trim()} onClick={() => void handleCaptureYuqueLogin()}><ShieldCheck size={17} />完成登录并保存</button>
