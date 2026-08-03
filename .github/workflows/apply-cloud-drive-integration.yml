@@ -1,0 +1,48 @@
+name: Integrate Yuque Cloud Drive
+
+on:
+  push:
+    branches:
+      - feat/yuque-cloud-drive
+    paths:
+      - scripts/apply-cloud-drive-integration.py
+      - .github/workflows/apply-cloud-drive-integration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[cloud-drive-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/yuque-cloud-drive
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply integration patch
+        run: python scripts/apply-cloud-drive-integration.py
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Format Rust
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml
+      - name: Check frontend
+        run: npm run build
+      - name: Check Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Commit verified integration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat: 接入语雀云盘附件管理 [cloud-drive-applied]"
+          git push origin HEAD:feat/yuque-cloud-drive
