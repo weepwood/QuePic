@@ -151,7 +151,9 @@ pub async fn download_to(cookie: &str, remote_url: &str, target: &Path) -> Resul
             .unwrap_or_default()
             .trim();
         if content_type.eq_ignore_ascii_case("text/html") {
-            return Err("语雀返回了网页而不是原始附件，下载地址可能已失效或来源账号需要重新登录。".into());
+            return Err(
+                "语雀返回了网页而不是原始附件，下载地址可能已失效或来源账号需要重新登录。".into(),
+            );
         }
         if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES {
             return Err("远程附件超过 QuePic 当前 1 GB 下载保护上限。".into());
