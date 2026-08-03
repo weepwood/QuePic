@@ -1,13 +1,6 @@
-use std::{
-    fs::File as StdFile,
-    io::Read,
-    path::Path,
-    time::Duration,
-};
+use std::{fs::File as StdFile, io::Read, path::Path, time::Duration};
 
-use reqwest::{
-    header, multipart, redirect::Policy, Client, RequestBuilder, Response, StatusCode,
-};
+use reqwest::{header, multipart, redirect::Policy, Client, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
 use tokio::{fs::File, io::AsyncWriteExt, time::sleep};
 use url::Url;
@@ -111,9 +104,7 @@ async fn try_digest_upload(
     for attempt in 0..=MAX_UPLOAD_RETRIES {
         let request = apply_browser_headers(client.post(url.clone()), cookie, referer).form(&body);
         match request.send().await {
-            Ok(response)
-                if response.status().is_server_error() && attempt < MAX_UPLOAD_RETRIES =>
-            {
+            Ok(response) if response.status().is_server_error() && attempt < MAX_UPLOAD_RETRIES => {
                 last_error = Some(format!("HTTP {}", response.status()));
             }
             Ok(response) => {
@@ -165,12 +156,11 @@ async fn upload_file_body(
             .mime_str(mime_type)
             .map_err(|_| "文件 MIME 类型无效。".to_string())?;
         let form = multipart::Form::new().part("file", part);
-        let request = apply_browser_headers(client.post(url.clone()), cookie, referer).multipart(form);
+        let request =
+            apply_browser_headers(client.post(url.clone()), cookie, referer).multipart(form);
 
         match request.send().await {
-            Ok(response)
-                if response.status().is_server_error() && attempt < MAX_UPLOAD_RETRIES =>
-            {
+            Ok(response) if response.status().is_server_error() && attempt < MAX_UPLOAD_RETRIES => {
                 last_error = Some(format!("HTTP {}", response.status()));
             }
             Ok(response) => {
@@ -203,7 +193,9 @@ async fn upload_file_body(
 async fn parse_upload_response(response: Response, operation: &str) -> Result<Value, String> {
     let status = response.status();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return Err("语雀 Cookie 已失效或当前账号没有目标文档权限，请重新登录并验证文档 URL。".into());
+        return Err(
+            "语雀 Cookie 已失效或当前账号没有目标文档权限，请重新登录并验证文档 URL。".into(),
+        );
     }
     if status.is_redirection() {
         return Err(format!(
@@ -264,8 +256,8 @@ fn apply_browser_headers(request: RequestBuilder, cookie: &str, referer: &str) -
 }
 
 fn build_digest_url(ctoken: &str, attachable_id: i64) -> Result<Url, String> {
-    let mut url = Url::parse(DIGEST_ENDPOINT)
-        .map_err(|error| format!("语雀附件秒传地址无效：{error}"))?;
+    let mut url =
+        Url::parse(DIGEST_ENDPOINT).map_err(|error| format!("语雀附件秒传地址无效：{error}"))?;
     url.query_pairs_mut()
         .append_pair("attachable_type", "Doc")
         .append_pair("attachable_id", &attachable_id.to_string())
@@ -378,9 +370,7 @@ impl Md5Context {
         }
 
         while input.len() >= 64 {
-            let block: &[u8; 64] = input[..64]
-                .try_into()
-                .expect("MD5 block length is fixed");
+            let block: &[u8; 64] = input[..64].try_into().expect("MD5 block length is fixed");
             self.process_block(block);
             input = &input[64..];
         }
@@ -414,23 +404,75 @@ impl Md5Context {
 
     fn process_block(&mut self, block: &[u8; 64]) {
         const SHIFTS: [u32; 64] = [
-            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20,
-            5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4,
-            11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
-            10, 15, 21,
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20,
+            5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+            6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
         ];
         const CONSTANTS: [u32; 64] = [
-            0xd76a_a478, 0xe8c7_b756, 0x2420_70db, 0xc1bd_ceee, 0xf57c_0faf, 0x4787_c62a,
-            0xa830_4613, 0xfd46_9501, 0x6980_98d8, 0x8b44_f7af, 0xffff_5bb1, 0x895c_d7be,
-            0x6b90_1122, 0xfd98_7193, 0xa679_438e, 0x49b4_0821, 0xf61e_2562, 0xc040_b340,
-            0x265e_5a51, 0xe9b6_c7aa, 0xd62f_105d, 0x0244_1453, 0xd8a1_e681, 0xe7d3_fbc8,
-            0x21e1_cde6, 0xc337_07d6, 0xf4d5_0d87, 0x455a_14ed, 0xa9e3_e905, 0xfcef_a3f8,
-            0x676f_02d9, 0x8d2a_4c8a, 0xfffa_3942, 0x8771_f681, 0x6d9d_6122, 0xfde5_380c,
-            0xa4be_ea44, 0x4bde_cfa9, 0xf6bb_4b60, 0xbebf_bc70, 0x289b_7ec6, 0xeaa1_27fa,
-            0xd4ef_3085, 0x0488_1d05, 0xd9d4_d039, 0xe6db_99e5, 0x1fa2_7cf8, 0xc4ac_5665,
-            0xf429_2244, 0x432a_ff97, 0xab94_23a7, 0xfc93_a039, 0x655b_59c3, 0x8f0c_cc92,
-            0xffef_f47d, 0x8584_5dd1, 0x6fa8_7e4f, 0xfe2c_e6e0, 0xa301_4314, 0x4e08_11a1,
-            0xf753_7e82, 0xbd3a_f235, 0x2ad7_d2bb, 0xeb86_d391,
+            0xd76a_a478,
+            0xe8c7_b756,
+            0x2420_70db,
+            0xc1bd_ceee,
+            0xf57c_0faf,
+            0x4787_c62a,
+            0xa830_4613,
+            0xfd46_9501,
+            0x6980_98d8,
+            0x8b44_f7af,
+            0xffff_5bb1,
+            0x895c_d7be,
+            0x6b90_1122,
+            0xfd98_7193,
+            0xa679_438e,
+            0x49b4_0821,
+            0xf61e_2562,
+            0xc040_b340,
+            0x265e_5a51,
+            0xe9b6_c7aa,
+            0xd62f_105d,
+            0x0244_1453,
+            0xd8a1_e681,
+            0xe7d3_fbc8,
+            0x21e1_cde6,
+            0xc337_07d6,
+            0xf4d5_0d87,
+            0x455a_14ed,
+            0xa9e3_e905,
+            0xfcef_a3f8,
+            0x676f_02d9,
+            0x8d2a_4c8a,
+            0xfffa_3942,
+            0x8771_f681,
+            0x6d9d_6122,
+            0xfde5_380c,
+            0xa4be_ea44,
+            0x4bde_cfa9,
+            0xf6bb_4b60,
+            0xbebf_bc70,
+            0x289b_7ec6,
+            0xeaa1_27fa,
+            0xd4ef_3085,
+            0x0488_1d05,
+            0xd9d4_d039,
+            0xe6db_99e5,
+            0x1fa2_7cf8,
+            0xc4ac_5665,
+            0xf429_2244,
+            0x432a_ff97,
+            0xab94_23a7,
+            0xfc93_a039,
+            0x655b_59c3,
+            0x8f0c_cc92,
+            0xffef_f47d,
+            0x8584_5dd1,
+            0x6fa8_7e4f,
+            0xfe2c_e6e0,
+            0xa301_4314,
+            0x4e08_11a1,
+            0xf753_7e82,
+            0xbd3a_f235,
+            0x2ad7_d2bb,
+            0xeb86_d391,
         ];
 
         let mut words = [0_u32; 16];
@@ -666,9 +708,8 @@ fn secure_client(timeout: Duration) -> Result<Client, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_digest_url, build_upload_url, classify_upload, find_attachment_url,
-        hex_lower, is_symlink_hit, normalize_remote_url, require_attachable_id, Md5Context,
-        UploadKind,
+        build_digest_url, build_upload_url, classify_upload, find_attachment_url, hex_lower,
+        is_symlink_hit, normalize_remote_url, require_attachable_id, Md5Context, UploadKind,
     };
     use serde_json::json;
 
@@ -683,7 +724,9 @@ mod tests {
             Some("attachment")
         );
         assert_eq!(
-            digest_query.get("attachable_id").map(|value| value.as_ref()),
+            digest_query
+                .get("attachable_id")
+                .map(|value| value.as_ref()),
             Some("279855146")
         );
 
@@ -736,7 +779,10 @@ mod tests {
         let mut abc = Md5Context::new();
         abc.update(b"a");
         abc.update(b"bc");
-        assert_eq!(hex_lower(&abc.finalize()), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            hex_lower(&abc.finalize()),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
     }
 
     #[test]
