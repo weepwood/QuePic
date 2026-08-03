@@ -2,11 +2,13 @@ mod accounts;
 mod backup;
 mod credentials;
 mod database;
+mod drive;
 mod models;
 mod openapi_token;
 mod preview;
 mod remote_preview;
 mod yuque;
+mod yuque_attachment;
 mod yuque_openapi;
 
 use std::{
@@ -982,6 +984,7 @@ pub fn run() {
             let database_path = app_data_dir.join("quepic.db");
             database::initialize(&database_path).map_err(std::io::Error::other)?;
             accounts::initialize(&database_path).map_err(std::io::Error::other)?;
+            drive::initialize(&database_path).map_err(std::io::Error::other)?;
 
             let preview_cache_dir = app.path().app_cache_dir()?.join("previews");
             fs::create_dir_all(&preview_cache_dir)?;
@@ -1009,6 +1012,16 @@ pub fn run() {
             accounts::save_account_profile,
             backup::export_backup,
             backup::import_backup,
+            drive::pick_drive_files,
+            drive::list_drive_files,
+            drive::list_drive_folders,
+            drive::create_drive_folder,
+            drive::list_drive_tags,
+            drive::update_drive_file_folder,
+            drive::update_drive_file_tags,
+            drive::delete_drive_file,
+            drive::upload_drive_file,
+            drive::save_drive_file,
             list_assets,
             update_asset_category,
             list_library_folders,
