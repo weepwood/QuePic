@@ -30,14 +30,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Apply integration patch
         run: python scripts/apply-cloud-drive-integration.py
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install
       - name: Format Rust
         run: cargo fmt --all --manifest-path src-tauri/Cargo.toml
       - name: Check frontend
