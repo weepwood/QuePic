@@ -90,7 +90,7 @@ export async function uploadDriveFile(
       fileSize: localFile.file_size,
       mimeType: localFile.mime_type,
       durationMs: Math.round(performance.now() - startedAt),
-      request,
+      request: logRequest,
     });
     const result = await invoke<DriveUploadResult>('upload_drive_file', {
       input: {
@@ -111,7 +111,7 @@ export async function uploadDriveFile(
       fileSize: localFile.file_size,
       mimeType: localFile.mime_type,
       durationMs: Math.round(performance.now() - startedAt),
-      request,
+      request: logRequest,
       response: {
         command: 'upload_drive_file',
         status: 'success',
@@ -134,7 +134,7 @@ export async function uploadDriveFile(
       fileSize: localFile.file_size,
       mimeType: localFile.mime_type,
       durationMs: Math.round(performance.now() - startedAt),
-      request,
+      request: logRequest,
       response: { command: 'upload_drive_file', status: 'error', message },
       error: message,
     });
