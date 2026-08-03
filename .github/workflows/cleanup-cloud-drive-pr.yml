@@ -24,10 +24,9 @@ jobs:
       - name: Remove generated and unrelated changes
         run: |
           git fetch origin main
-          git checkout origin/main -- \
-            src-tauri/Cargo.lock \
-            src-tauri/gen/schemas \
-            src-tauri/icons
+          rm -f src-tauri/Cargo.lock
+          rm -rf src-tauri/gen/schemas
+          git checkout origin/main -- src-tauri/icons
           rm .github/workflows/cleanup-cloud-drive-pr.yml
       - name: Commit cleanup
         run: |
