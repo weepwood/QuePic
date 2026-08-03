@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { AccountBackupManager } from './components/AccountBackupManager';
+import { CloudDriveManager } from './components/CloudDriveManager';
 import { UploadLogManager } from './components/UploadLogManager';
 import './styles.css';
 import './preview.css';
@@ -17,11 +18,13 @@ import './original-viewer.css';
 // 新图库布局必须最后加载，以覆盖旧网格和详情预览规则。
 import './library-overhaul.css';
 import './upload-log.css';
+import './cloud-drive.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
     <AccountBackupManager />
+    <CloudDriveManager />
     <UploadLogManager />
   </StrictMode>,
 );
