@@ -1,1 +1,0 @@
-{"main-capability":{"identifier":"main-capability","description":"QuePic 主窗口仅使用核心 IPC 与自定义命令。","local":true,"windows":["main"],"permissions":["core:default"]}}
