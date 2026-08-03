@@ -54,6 +54,11 @@ export async function uploadDriveFile(
   const requestId = crypto.randomUUID();
   const startedAt = performance.now();
   const context = getStoredUploadContext(accountName);
+  if (!context) {
+    throw new Error(
+      `账号“${accountName}”尚未准备语雀文档上传上下文；请先在设置中验证目标文档 URL。`,
+    );
+  }
   const request = {
     local_path: localFile.local_path,
     file_name: localFile.file_name,
@@ -63,16 +68,18 @@ export async function uploadDriveFile(
     account_name: accountName,
     folder,
     tags,
-    attachable_id: context?.attachable_id ?? null,
-    referer_url: context?.document_url ?? null,
-    upload_mode: context ? 'document_context' : 'contextless_attachment',
+    attachable_id: context.attachable_id,
+    referer_url: context.document_url,
+    upload_mode: localFile.mime_type.startsWith('image/')
+      ? 'yuque_web_image'
+      : 'yuque_web_attachment',
   };
   const logRequest = { ...request, local_path: '[native path omitted]' };
 
   recordUploadLog({
     requestId,
     phase: 'prepared',
-    title: '准备上传云盘附件',
+    title: localFile.mime_type.startsWith('image/') ? '准备上传云盘图片' : '准备上传云盘附件',
     accountName,
     fileName: localFile.file_name,
     fileSize: localFile.file_size,
@@ -84,7 +91,9 @@ export async function uploadDriveFile(
     recordUploadLog({
       requestId,
       phase: 'sent',
-      title: '已发送流式附件上传命令',
+      title: localFile.mime_type.startsWith('image/')
+        ? '已发送语雀网页图片上传命令'
+        : '已发送语雀网页附件上传命令',
       accountName,
       fileName: localFile.file_name,
       fileSize: localFile.file_size,
@@ -98,14 +107,14 @@ export async function uploadDriveFile(
         account_name: accountName,
         folder,
         tags,
-        attachable_id: context?.attachable_id ?? null,
-        referer_url: context?.document_url ?? null,
+        attachable_id: context.attachable_id,
+        referer_url: context.document_url,
       },
     });
     recordUploadLog({
       requestId,
       phase: 'success',
-      title: result.deduplicated ? '复用历史附件地址' : '语雀附件上传成功',
+      title: result.deduplicated ? '复用历史附件地址' : '语雀文件上传成功',
       accountName,
       fileName: localFile.file_name,
       fileSize: localFile.file_size,
@@ -128,7 +137,7 @@ export async function uploadDriveFile(
     recordUploadLog({
       requestId,
       phase: 'error',
-      title: '语雀附件上传失败',
+      title: '语雀文件上传失败',
       accountName,
       fileName: localFile.file_name,
       fileSize: localFile.file_size,
