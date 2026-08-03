@@ -1,0 +1,38 @@
+name: Cleanup Cloud Drive PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: ${{ github.head_ref == 'feat/yuque-cloud-drive' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/yuque-cloud-drive
+          fetch-depth: 0
+      - name: Remove generated and unrelated changes
+        run: |
+          git fetch origin main
+          git checkout origin/main -- \
+            src-tauri/Cargo.lock \
+            src-tauri/gen/schemas \
+            src-tauri/icons
+          rm .github/workflows/cleanup-cloud-drive-pr.yml
+      - name: Commit cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "chore: 清理云盘 PR 的生成产物"
+          git push origin HEAD:feat/yuque-cloud-drive
