@@ -1,6 +1,6 @@
 [package]
 name = "quepic"
-version = "0.8.1"
+version = "0.9.0"
 description = "本地优先的语雀文件与图片云盘管理工具"
 authors = ["weepwood"]
 edition = "2021"
