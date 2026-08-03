@@ -7,6 +7,13 @@ on:
     paths:
       - scripts/apply-cloud-drive-integration.py
       - .github/workflows/apply-cloud-drive-integration.yml
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
 
 permissions:
   contents: write
