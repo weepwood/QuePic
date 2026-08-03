@@ -143,6 +143,16 @@ pub async fn download_to(cookie: &str, remote_url: &str, target: &Path) -> Resul
         if !status.is_success() {
             return Err(format!("语雀附件下载失败（HTTP {status}）。"));
         }
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .unwrap_or_default()
+            .trim();
+        if content_type.eq_ignore_ascii_case("text/html") {
+            return Err("语雀返回了网页而不是原始附件，下载地址可能已失效或来源账号需要重新登录。".into());
+        }
         if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES {
             return Err("远程附件超过 QuePic 当前 1 GB 下载保护上限。".into());
         }
@@ -222,13 +232,17 @@ fn normalize_document_url(raw_url: &str) -> Result<String, String> {
 
 fn find_attachment_url(payload: &Value) -> Option<&str> {
     const CANDIDATE_KEYS: &[&str] = &[
-        "url",
         "download_url",
         "downloadUrl",
-        "file_url",
-        "fileUrl",
+        "original_url",
+        "originalUrl",
         "source_url",
         "sourceUrl",
+        "file_url",
+        "fileUrl",
+        "raw_url",
+        "rawUrl",
+        "url",
     ];
     for key in CANDIDATE_KEYS {
         if let Some(value) = payload
@@ -305,6 +319,15 @@ mod tests {
         assert_eq!(
             find_attachment_url(&json!({"data": {"url": "https://cdn.nlark.com/a.pdf"}})),
             Some("https://cdn.nlark.com/a.pdf")
+        );
+        assert_eq!(
+            find_attachment_url(&json!({
+                "data": {
+                    "url": "https://cdn.nlark.com/preview.pdf",
+                    "download_url": "https://www.yuque.com/api/v2/attachments/original.pdf"
+                }
+            })),
+            Some("https://www.yuque.com/api/v2/attachments/original.pdf")
         );
         assert_eq!(
             find_attachment_url(

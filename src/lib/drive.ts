@@ -67,6 +67,7 @@ export async function uploadDriveFile(
     referer_url: context?.document_url ?? null,
     upload_mode: context ? 'document_context' : 'contextless_attachment',
   };
+  const logRequest = { ...request, local_path: '[native path omitted]' };
 
   recordUploadLog({
     requestId,
@@ -76,7 +77,7 @@ export async function uploadDriveFile(
     fileName: localFile.file_name,
     fileSize: localFile.file_size,
     mimeType: localFile.mime_type,
-    request,
+    request: logRequest,
   });
 
   try {
@@ -115,7 +116,10 @@ export async function uploadDriveFile(
         command: 'upload_drive_file',
         status: 'success',
         deduplicated: result.deduplicated,
-        file: result.file,
+        file: {
+          ...result.file,
+          local_path: result.file.local_path ? '[native path omitted]' : null,
+        },
       },
     });
     return result;

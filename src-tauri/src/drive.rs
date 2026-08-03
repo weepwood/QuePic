@@ -18,10 +18,10 @@ const DEFAULT_FOLDER: &str = "未分类";
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "pdf", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "txt", "md", "csv", "tsv", "rtf",
-    "odt", "ods", "odp", "pages", "numbers", "key", "json", "xml", "yaml", "yml", "log", "jpg",
+    "pdf", "doc", "docx", "docm", "dot", "dotx", "dotm", "xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "ppt", "pptx", "pptm", "pot", "potx", "potm", "pps", "ppsx", "ppsm", "txt", "md", "csv", "tsv", "rtf",
+    "odt", "ods", "odp", "wps", "wpt", "et", "ett", "dps", "dpt", "pages", "numbers", "key", "json", "xml", "yaml", "yml", "log", "ics", "msg", "epub", "mobi", "jpg",
     "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg", "ico", "psd", "ai", "sketch", "fig",
-    "xmind", "mmap", "mindnode", "rp", "rplib", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2",
+    "xmind", "mmap", "mindnode", "rp", "rplib", "eps", "dwg", "dxf", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2",
     "xz", "mp3", "m4a", "wav", "flac", "ogg", "mp4", "mov", "m4v", "webm", "avi", "mkv",
 ];
 
@@ -745,11 +745,16 @@ fn mime_type_for_extension(extension: &str) -> &'static str {
     match extension {
         "pdf" => "application/pdf",
         "doc" => "application/msword",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "xls" => "application/vnd.ms-excel",
-        "xlsx" | "xlsm" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "ppt" => "application/vnd.ms-powerpoint",
-        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "docx" | "dotx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docm" | "dotm" => "application/vnd.ms-word.document.macroenabled.12",
+        "dot" => "application/msword",
+        "xls" | "xlt" => "application/vnd.ms-excel",
+        "xlsx" | "xltx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsm" | "xltm" => "application/vnd.ms-excel.sheet.macroenabled.12",
+        "xlsb" => "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+        "ppt" | "pot" | "pps" => "application/vnd.ms-powerpoint",
+        "pptx" | "potx" | "ppsx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pptm" | "potm" | "ppsm" => "application/vnd.ms-powerpoint.presentation.macroenabled.12",
         "txt" | "log" => "text/plain",
         "md" => "text/markdown",
         "csv" => "text/csv",
@@ -792,7 +797,7 @@ mod tests {
 
     #[test]
     fn exposes_common_yuque_attachment_formats() {
-        for extension in ["pdf", "docx", "xlsx", "pptx", "zip", "mp4", "xmind"] {
+        for extension in ["pdf", "docx", "xlsx", "pptx", "wps", "zip", "mp4", "xmind"] {
             assert!(SUPPORTED_EXTENSIONS.contains(&extension));
         }
         assert_eq!(mime_type_for_extension("pdf"), "application/pdf");
