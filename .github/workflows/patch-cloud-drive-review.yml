@@ -1,0 +1,98 @@
+name: Patch Cloud Drive Review Findings
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.head_ref == 'feat/yuque-cloud-drive' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/yuque-cloud-drive
+          fetch-depth: 0
+      - name: Apply review fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str, count: int = 1) -> None:
+              target = Path(path)
+              text = target.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'missing patch anchor in {path}: {old!r}')
+              target.write_text(text.replace(old, new, count), encoding='utf-8')
+
+          replace(
+              'src-tauri/src/yuque_attachment.rs',
+              '''    const CANDIDATE_KEYS: &[&str] = &[\n        "url",\n        "download_url",\n        "downloadUrl",\n        "file_url",\n        "fileUrl",\n        "source_url",\n        "sourceUrl",\n    ];''',
+              '''    const CANDIDATE_KEYS: &[&str] = &[\n        "download_url",\n        "downloadUrl",\n        "original_url",\n        "originalUrl",\n        "source_url",\n        "sourceUrl",\n        "file_url",\n        "fileUrl",\n        "raw_url",\n        "rawUrl",\n        "url",\n    ];''',
+          )
+          replace(
+              'src-tauri/src/yuque_attachment.rs',
+              '''        if !status.is_success() {\n            return Err(format!("语雀附件下载失败（HTTP {status}）。"));\n        }\n        if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES {''',
+              '''        if !status.is_success() {\n            return Err(format!("语雀附件下载失败（HTTP {status}）。"));\n        }\n        let content_type = response\n            .headers()\n            .get(header::CONTENT_TYPE)\n            .and_then(|value| value.to_str().ok())\n            .and_then(|value| value.split(';').next())\n            .unwrap_or_default()\n            .trim();\n        if content_type.eq_ignore_ascii_case("text/html") {\n            return Err("语雀返回了网页而不是原始附件，下载地址可能已失效或来源账号需要重新登录。".into());\n        }\n        if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES {''',
+          )
+          replace(
+              'src-tauri/src/yuque_attachment.rs',
+              '''        assert_eq!(\n            find_attachment_url(&json!({"data": {"url": "https://cdn.nlark.com/a.pdf"}})),\n            Some("https://cdn.nlark.com/a.pdf")\n        );''',
+              '''        assert_eq!(\n            find_attachment_url(&json!({"data": {"url": "https://cdn.nlark.com/a.pdf"}})),\n            Some("https://cdn.nlark.com/a.pdf")\n        );\n        assert_eq!(\n            find_attachment_url(&json!({\n                "data": {\n                    "url": "https://cdn.nlark.com/preview.pdf",\n                    "download_url": "https://www.yuque.com/api/v2/attachments/original.pdf"\n                }\n            })),\n            Some("https://www.yuque.com/api/v2/attachments/original.pdf")\n        );''',
+          )
+
+          replace(
+              'src-tauri/src/drive.rs',
+              '"pdf", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "txt", "md", "csv", "tsv", "rtf",',
+              '"pdf", "doc", "docx", "docm", "dot", "dotx", "dotm", "xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "ppt", "pptx", "pptm", "pot", "potx", "potm", "pps", "ppsx", "ppsm", "txt", "md", "csv", "tsv", "rtf",',
+          )
+          replace(
+              'src-tauri/src/drive.rs',
+              '"odt", "ods", "odp", "pages", "numbers", "key", "json", "xml", "yaml", "yml", "log", "jpg",',
+              '"odt", "ods", "odp", "wps", "wpt", "et", "ett", "dps", "dpt", "pages", "numbers", "key", "json", "xml", "yaml", "yml", "log", "ics", "msg", "epub", "mobi", "jpg",',
+          )
+          replace(
+              'src-tauri/src/drive.rs',
+              '"xmind", "mmap", "mindnode", "rp", "rplib", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2",',
+              '"xmind", "mmap", "mindnode", "rp", "rplib", "eps", "dwg", "dxf", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2",',
+          )
+          replace(
+              'src-tauri/src/drive.rs',
+              '''        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",\n        "xls" => "application/vnd.ms-excel",\n        "xlsx" | "xlsm" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",\n        "ppt" => "application/vnd.ms-powerpoint",\n        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",''',
+              '''        "docx" | "dotx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",\n        "docm" | "dotm" => "application/vnd.ms-word.document.macroenabled.12",\n        "dot" => "application/msword",\n        "xls" | "xlt" => "application/vnd.ms-excel",\n        "xlsx" | "xltx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",\n        "xlsm" | "xltm" => "application/vnd.ms-excel.sheet.macroenabled.12",\n        "xlsb" => "application/vnd.ms-excel.sheet.binary.macroenabled.12",\n        "ppt" | "pot" | "pps" => "application/vnd.ms-powerpoint",\n        "pptx" | "potx" | "ppsx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",\n        "pptm" | "potm" | "ppsm" => "application/vnd.ms-powerpoint.presentation.macroenabled.12",''',
+          )
+          replace(
+              'src-tauri/src/drive.rs',
+              'for extension in ["pdf", "docx", "xlsx", "pptx", "zip", "mp4", "xmind"] {',
+              'for extension in ["pdf", "docx", "xlsx", "pptx", "wps", "zip", "mp4", "xmind"] {',
+          )
+
+          replace(
+              'src/lib/drive.ts',
+              '''  };\n\n  recordUploadLog({''',
+              '''  };\n  const logRequest = { ...request, local_path: '[native path omitted]' };\n\n  recordUploadLog({''',
+          )
+          replace('src/lib/drive.ts', '\n    request,\n', '\n    request: logRequest,\n', 4)
+          replace(
+              'src/lib/drive.ts',
+              '''        file: result.file,''',
+              '''        file: {\n          ...result.file,\n          local_path: result.file.local_path ? '[native path omitted]' : null,\n        },''',
+          )
+
+          Path('.github/workflows/patch-cloud-drive-review.yml').unlink()
+          PY
+      - name: Commit review fixes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: 完善原始附件地址与隐私边界"
+          git push origin HEAD:feat/yuque-cloud-drive
